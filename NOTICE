@@ -1,0 +1,28 @@
+JLP7 — Jean-Luc's Practical Purposeful Pre-Processed Polyglot Python Project
+Copyright 2026 Jean-Luc Robitaille
+
+This product is licensed under the Apache License, Version 2.0.
+See LICENSE for the full license text.
+
+-------------------------------------------------------------------------------
+
+This software embeds and links against the following third-party components:
+
+Python (libpython)
+  License: Python Software Foundation License Version 2
+  https://www.python.org/psf/license/
+  Used for: embedded Python interpreter (runner_python.c)
+
+The following external tools are invoked at runtime but are not
+distributed with or linked into this software:
+
+GCC (gcc)
+  License: GNU General Public License v3 with Runtime Library Exception
+  https://gcc.gnu.org/onlinedocs/libstdc++/manual/license.html
+  Used for: compiling generated C snippets (runner_c.c)
+
+JShell (jshell)
+  Part of the OpenJDK distribution.
+  License: GNU General Public License v2 with Classpath Exception
+  https://openjdk.org/legal/gplv2+ce.html
+  Used for: executing generated Java snippets (runner_java.c)
