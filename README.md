@@ -1,11 +1,11 @@
 # JLP7
 **Jean-Luc's Practical Purposeful Pre-Processed Polyglot Python Project**
 
-Run Java or C code with inline Python blocks. Variables flow bidirectionally across the boundary.
+Run C or Java code with inline Python blocks. Variables flow bidirectionally across the boundary. Core written in C for performance, with a Python package for convenience.
 
 ```c
-int x = 5;
-int y = 10;
+long long x = 5;
+long long y = 10;
 /p
 x = x + 1
 result = x * y
@@ -30,6 +30,36 @@ make test
 
 ## Usage
 
+### Python
+
+```sh
+pip install ./python
+```
+
+```python
+from jlp7 import JLP7
+
+pg  = JLP7('c')  # or 'java'
+env = pg.run('''
+    long long x = 5;
+    /p
+    x = x * 2
+    label = "doubled"
+    p/
+    printf("%s: %lld\n", label, x);
+''')
+print(env)  # {'x': 10, 'label': 'doubled'}
+```
+
+Pre-seed variables from Python:
+
+```python
+env = pg.run('/p\nx = x * 2\np/\n', env={'x': 21})
+# env['x'] == 42
+```
+
+### C
+
 ```c
 #include "jlp7.h"
 
@@ -47,19 +77,19 @@ jlp7_exec(
 jlp7_env_free(env);
 ```
 
-Link with:
 ```sh
+make lib
 gcc -Iinclude your_program.c -o your_program -L. -ljlp7 -lpython3.12
 ```
 
 ## Supported Types
 
-| C / Java       | JLP7 internal | Python  |
-|----------------|---------------|---------|
-| `long long`    | `JLP7_INT`    | `int`   |
-| `double`       | `JLP7_FLOAT`  | `float` |
-| `int` (0/1)    | `JLP7_BOOL`   | `bool`  |
-| `char[]`       | `JLP7_STRING` | `str`   |
+| C / Java       | Python  |
+|----------------|---------|
+| `long long`    | `int`   |
+| `double`       | `float` |
+| `int` (0/1)    | `bool`  |
+| `char[]`       | `str`   |
 
 ## License
 
