@@ -101,6 +101,14 @@ static PyObject *env_to_pydict(const Jlp7Env *env) {
             case JLP7_FLOAT:  val = PyFloat_FromDouble(v->val.f);   break;
             case JLP7_BOOL:   val = PyBool_FromLong(v->val.b);      break;
             case JLP7_STRING: val = PyUnicode_FromString(v->val.s); break;
+            case JLP7_ARRAY: {
+                val = PyList_New((Py_ssize_t)v->arr_len);
+                for (size_t k = 0; k < v->arr_len; k++) {
+                    PyList_SET_ITEM(val, (Py_ssize_t)k,
+                                     PyFloat_FromDouble(v->val.arr[k]));
+                }
+                break;
+            }
         }
         if (val) {
             PyDict_SetItemString(d, v->name, val);
@@ -108,6 +116,50 @@ static PyObject *env_to_pydict(const Jlp7Env *env) {
         }
     }
     return d;
+}
+
+/* Recursively flatten a Python list/tuple, or anything exposing
+ * .tolist() (numpy arrays and similar), into a growable double
+ * buffer. Nested sequences flatten in row-major order. */
+static int flatten_numeric(PyObject *obj, double **buf, size_t *len, size_t *cap) {
+    if (!PyList_Check(obj) && !PyTuple_Check(obj) &&
+        PyObject_HasAttrString(obj, "tolist")) {
+        PyObject *as_list = PyObject_CallMethod(obj, "tolist", NULL);
+        if (!as_list) { PyErr_Clear(); return -1; }
+        int rc = flatten_numeric(as_list, buf, len, cap);
+        Py_DECREF(as_list);
+        return rc;
+    }
+
+    if (PyList_Check(obj) || PyTuple_Check(obj)) {
+        Py_ssize_t n = PySequence_Size(obj);
+        for (Py_ssize_t i = 0; i < n; i++) {
+            PyObject *item = PySequence_GetItem(obj, i);
+            int rc = flatten_numeric(item, buf, len, cap);
+            Py_DECREF(item);
+            if (rc != 0) return -1;
+        }
+        return 0;
+    }
+
+    double v;
+    if (PyBool_Check(obj))        v = PyObject_IsTrue(obj) ? 1.0 : 0.0;
+    else if (PyLong_Check(obj))   v = (double)PyLong_AsLongLong(obj);
+    else if (PyFloat_Check(obj))  v = PyFloat_AsDouble(obj);
+    else return -1;
+
+    if (*len == *cap) {
+        *cap = (*cap == 0) ? 16 : (*cap * 2);
+        *buf = realloc(*buf, sizeof(double) * (*cap));
+    }
+    (*buf)[(*len)++] = v;
+    return 0;
+}
+
+static int is_array_like(PyObject *obj) {
+    if (PyList_Check(obj) || PyTuple_Check(obj)) return 1;
+    if (PyUnicode_Check(obj) || PyBytes_Check(obj)) return 0;
+    return PyObject_HasAttrString(obj, "tolist");
 }
 
 /* PyDict -> Jlp7Env: read back mutations and new variables */
@@ -131,6 +183,13 @@ static void pydict_to_env(PyObject *d, Jlp7Env *env) {
             jlp7_env_set_float(env, name, PyFloat_AsDouble(val));
         } else if (PyUnicode_Check(val)) {
             jlp7_env_set_str(env, name, PyUnicode_AsUTF8(val));
+        } else if (is_array_like(val)) {
+            double *buf = NULL;
+            size_t len = 0, cap = 0;
+            if (flatten_numeric(val, &buf, &len, &cap) == 0 && len > 0) {
+                jlp7_env_set_array(env, name, buf, len);
+            }
+            free(buf);
         }
     }
 }

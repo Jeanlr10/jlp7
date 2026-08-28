@@ -101,20 +101,27 @@ int jlp7_run_c(const char *code, Jlp7Env *env) {
         return -1;
     }
 
-    /* 6. Read stdout: pass through user output, capture __VARS__ */
-    char line[MAX_LINE];
-    char vars_json[MAX_LINE] = {0};
+    /* 6. Read stdout: pass through user output, capture __VARS__.
+     * getline() grows its buffer as needed -- a fixed-size fgets buffer
+     * truncates mid-line for array-heavy output (a feature matrix's
+     * JSON can easily run past a few KB), corrupting both the parsed
+     * vars and whatever spills onto real stdout. */
+    char   *line      = NULL;
+    size_t  line_cap  = 0;
+    char   *vars_json = NULL;
 
-    while (fgets(line, sizeof(line), pipe)) {
+    while (getline(&line, &line_cap, pipe) != -1) {
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
 
         if (strncmp(line, "__VARS__:", 9) == 0) {
-            strncpy(vars_json, line + 9, MAX_LINE - 1);
+            free(vars_json);
+            vars_json = strdup(line + 9);
         } else if (len > 0) {
             puts(line);
         }
     }
+    free(line);
 
     int run_rc = pclose(pipe);
 
@@ -139,12 +146,14 @@ int jlp7_run_c(const char *code, Jlp7Env *env) {
 
     if (run_rc != 0) {
         fprintf(stderr, "[jlp7:c] binary exited with status %d\n", run_rc);
+        free(vars_json);
         return -1;
     }
 
     /* 8. Parse vars back into env */
-    if (vars_json[0])
+    if (vars_json && vars_json[0])
         jlp7_c_parse_vars(vars_json, env);
+    free(vars_json);
 
     return 0;
 }

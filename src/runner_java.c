@@ -69,16 +69,20 @@ int jlp7_run_java(const char *code, Jlp7Env *env) {
         return -1;
     }
 
-    /* 6. Read stdout: pass-through user output, capture __VARS__ line */
-    char line[MAX_LINE];
-    char vars_json[MAX_LINE] = {0};
+    /* 6. Read stdout: pass-through user output, capture __VARS__ line.
+     * getline() grows its buffer as needed, unlike a fixed fgets buffer
+     * (see the identical fix in runner_c.c for why this matters). */
+    char   *line      = NULL;
+    size_t  line_cap  = 0;
+    char   *vars_json = NULL;
 
-    while (fgets(line, sizeof(line), pipe)) {
+    while (getline(&line, &line_cap, pipe) != -1) {
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') line[--len] = '\0';
 
         if (strncmp(line, "__VARS__:", 9) == 0) {
-            strncpy(vars_json, line + 9, MAX_LINE - 1);
+            free(vars_json);
+            vars_json = strdup(line + 9);
         } else if (len > 0) {
             puts(line);
         }
@@ -90,7 +94,7 @@ int jlp7_run_java(const char *code, Jlp7Env *env) {
     FILE *ef = fopen(errpath, "r");
     if (ef) {
         int printed_header = 0;
-        while (fgets(line, sizeof(line), ef)) {
+        while (getline(&line, &line_cap, ef) != -1) {
             if (!printed_header) {
                 fprintf(stderr, "[jlp7:java] errors:\n");
                 printed_header = 1;
@@ -99,6 +103,7 @@ int jlp7_run_java(const char *code, Jlp7Env *env) {
         }
         fclose(ef);
     }
+    free(line);
 
     /* 8. Clean up temp files */
     remove(jshpath);
@@ -106,12 +111,14 @@ int jlp7_run_java(const char *code, Jlp7Env *env) {
 
     if (exit_status != 0) {
         fprintf(stderr, "[jlp7:java] jshell exited with status %d\n", exit_status);
+        free(vars_json);
         return -1;
     }
 
     /* 9. Parse vars back into env */
-    if (vars_json[0])
+    if (vars_json && vars_json[0])
         jlp7_java_parse_vars(vars_json, env);
+    free(vars_json);
 
     return 0;
 }

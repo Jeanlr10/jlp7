@@ -20,16 +20,19 @@ typedef enum {
     JLP7_FLOAT,
     JLP7_BOOL,
     JLP7_STRING,
+    JLP7_ARRAY,   /* array of doubles, flattened; arr_len tracks count */
 } Jlp7Type;
 
 typedef struct {
     char     *name;
     Jlp7Type  type;
+    size_t    arr_len;  /* only meaningful when type == JLP7_ARRAY */
     union {
         long long  i;
         double     f;
         int        b;   /* 0 = false, 1 = true */
         char      *s;
+        double    *arr;
     } val;
 } Jlp7Var;
 
@@ -47,6 +50,8 @@ void      jlp7_env_set_int(Jlp7Env *env, const char *name, long long val);
 void      jlp7_env_set_float(Jlp7Env *env, const char *name, double val);
 void      jlp7_env_set_bool(Jlp7Env *env, const char *name, int val);
 void      jlp7_env_set_str(Jlp7Env *env, const char *name, const char *val);
+void      jlp7_env_set_array(Jlp7Env *env, const char *name,
+                              const double *values, size_t len);
 Jlp7Var  *jlp7_env_get(Jlp7Env *env, const char *name);
 void      jlp7_env_dump(const Jlp7Env *env);   /* debug print */
 

@@ -11,8 +11,10 @@
 
 /* A single scanned variable declaration from a C block. */
 typedef struct {
-    char type[JLP7_TYPE_MAX];
-    char name[JLP7_NAME_MAX];
+    char      type[JLP7_TYPE_MAX];
+    char      name[JLP7_NAME_MAX];
+    int       is_array;   /* 1 if declared as type name[N] */
+    long long arr_len;    /* N, only meaningful when is_array */
 } Jlp7CVarDecl;
 
 /* c_builder.c */

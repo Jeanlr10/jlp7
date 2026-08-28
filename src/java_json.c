@@ -82,6 +82,27 @@ void jlp7_java_parse_vars(const char *json, Jlp7Env *env) {
             char *val = parse_json_string(&p);
             jlp7_env_set_str(env, key, val);
             free(val);
+        } else if (*p == '[') {
+            p++;
+            size_t cap = 16, len = 0;
+            double *arr = malloc(sizeof(double) * cap);
+            skip_ws(&p);
+            while (*p && *p != ']') {
+                char *end;
+                double v = strtod(p, &end);
+                if (end == p) break;  /* not a number -- stop, best effort */
+                if (len == cap) {
+                    cap *= 2;
+                    arr = realloc(arr, sizeof(double) * cap);
+                }
+                arr[len++] = v;
+                p = end;
+                skip_ws(&p);
+                if (*p == ',') { p++; skip_ws(&p); }
+            }
+            if (*p == ']') p++;
+            jlp7_env_set_array(env, key, arr, len);
+            free(arr);
         } else if (strncmp(p, "true", 4) == 0 && !isalnum((unsigned char)p[4])) {
             jlp7_env_set_bool(env, key, 1);
             p += 4;

@@ -50,6 +50,7 @@ JLP7_INT    = 0
 JLP7_FLOAT  = 1
 JLP7_BOOL   = 2
 JLP7_STRING = 3
+JLP7_ARRAY  = 4
 
 class _ValUnion(ctypes.Union):
     _fields_ = [
@@ -57,13 +58,17 @@ class _ValUnion(ctypes.Union):
         ("f", ctypes.c_double),
         ("b", ctypes.c_int),
         ("s", ctypes.c_char_p),
+        ("arr", ctypes.POINTER(ctypes.c_double)),
     ]
 
 class _Jlp7Var(ctypes.Structure):
+    # field order and types must mirror struct Jlp7Var in jlp7.h exactly --
+    # arr_len sits between type and val, same as the C struct.
     _fields_ = [
-        ("name", ctypes.c_char_p),
-        ("type", ctypes.c_int),
-        ("val",  _ValUnion),
+        ("name",    ctypes.c_char_p),
+        ("type",    ctypes.c_int),
+        ("arr_len", ctypes.c_size_t),
+        ("val",     _ValUnion),
     ]
 
 class _Jlp7Env(ctypes.Structure):
@@ -99,6 +104,10 @@ _lib.jlp7_env_set_bool.argtypes  = [ctypes.POINTER(_Jlp7Env), ctypes.c_char_p, c
 
 _lib.jlp7_env_set_str.restype    = None
 _lib.jlp7_env_set_str.argtypes   = [ctypes.POINTER(_Jlp7Env), ctypes.c_char_p, ctypes.c_char_p]
+
+_lib.jlp7_env_set_array.restype  = None
+_lib.jlp7_env_set_array.argtypes = [ctypes.POINTER(_Jlp7Env), ctypes.c_char_p,
+                                     ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
 
 _lib.jlp7_env_get.restype        = ctypes.POINTER(_Jlp7Var)
 _lib.jlp7_env_get.argtypes       = [ctypes.POINTER(_Jlp7Env), ctypes.c_char_p]

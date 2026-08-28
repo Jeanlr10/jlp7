@@ -32,10 +32,10 @@ from typing import Any
 from ._lib import (
     _lib,
     _Jlp7Config,
-    JLP7_INT, JLP7_FLOAT, JLP7_BOOL, JLP7_STRING,
+    JLP7_INT, JLP7_FLOAT, JLP7_BOOL, JLP7_STRING, JLP7_ARRAY,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__     = ["JLP7", "JLP7Error"]
 
 
@@ -58,6 +58,9 @@ def _env_to_dict(env_ptr) -> dict[str, Any]:
             result[name] = bool(v.val.b)
         elif v.type == JLP7_STRING:
             result[name] = v.val.s.decode() if v.val.s else ""
+        elif v.type == JLP7_ARRAY:
+            n = v.arr_len
+            result[name] = [v.val.arr[k] for k in range(n)] if n else []
     return result
 
 
@@ -73,11 +76,33 @@ def _dict_to_env(d: dict[str, Any], env_ptr) -> None:
             _lib.jlp7_env_set_float(env_ptr, key, value)
         elif isinstance(value, str):
             _lib.jlp7_env_set_str(env_ptr, key, value.encode())
+        elif isinstance(value, (list, tuple)) or hasattr(value, "tolist"):
+            # accepts plain lists/tuples and numpy arrays (via .tolist());
+            # flattened, so a 2D array goes in row-major and comes back flat
+            flat = _flatten(value)
+            arr_t = ctypes.c_double * len(flat)
+            _lib.jlp7_env_set_array(env_ptr, key, arr_t(*flat), len(flat))
         else:
             raise TypeError(
                 f"Variable '{name}' has unsupported type {type(value).__name__}. "
-                f"JLP7 supports int, float, bool, and str."
+                f"JLP7 supports int, float, bool, str, and list/tuple/ndarray "
+                f"of numbers."
             )
+
+
+def _flatten(value) -> list[float]:
+    """Flatten a list/tuple/ndarray of numbers into a flat list of floats."""
+    if hasattr(value, "tolist") and not isinstance(value, (list, tuple)):
+        value = value.tolist()
+    out: list[float] = []
+    for item in value:
+        if isinstance(item, (list, tuple)) or (
+            hasattr(item, "tolist") and not isinstance(item, (int, float))
+        ):
+            out.extend(_flatten(item))
+        else:
+            out.append(float(item))
+    return out
 
 
 class JLP7:

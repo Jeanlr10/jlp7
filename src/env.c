@@ -20,6 +20,7 @@ Jlp7Env *jlp7_env_new(void) {
 static void var_free(Jlp7Var *v) {
     free(v->name);
     if (v->type == JLP7_STRING) free(v->val.s);
+    if (v->type == JLP7_ARRAY)  free(v->val.arr);
 }
 
 void jlp7_env_free(Jlp7Env *env) {
@@ -47,11 +48,16 @@ static Jlp7Var *upsert(Jlp7Env *env, const char *name) {
     return v;
 }
 
-/* Free the string payload of a var that's being overwritten. */
+/* Free the string/array payload of a var that's being overwritten. */
 static void clear_str(Jlp7Var *v) {
     if (v->type == JLP7_STRING) {
         free(v->val.s);
         v->val.s = NULL;
+    }
+    if (v->type == JLP7_ARRAY) {
+        free(v->val.arr);
+        v->val.arr = NULL;
+        v->arr_len = 0;
     }
 }
 
@@ -87,6 +93,17 @@ void jlp7_env_set_str(Jlp7Env *env, const char *name, const char *val) {
     v->val.s = strdup(val);
 }
 
+void jlp7_env_set_array(Jlp7Env *env, const char *name,
+                         const double *values, size_t len) {
+    Jlp7Var *v = upsert(env, name);
+    if (!v) return;
+    clear_str(v);
+    v->type    = JLP7_ARRAY;
+    v->arr_len = len;
+    v->val.arr = malloc(sizeof(double) * (len ? len : 1));
+    if (len) memcpy(v->val.arr, values, sizeof(double) * len);
+}
+
 Jlp7Var *jlp7_env_get(Jlp7Env *env, const char *name) {
     for (size_t i = 0; i < env->count; i++)
         if (strcmp(env->vars[i].name, name) == 0)
@@ -103,6 +120,9 @@ void jlp7_env_dump(const Jlp7Env *env) {
             case JLP7_FLOAT:  fprintf(stderr, "  %s = %g (float)\n",   v->name, v->val.f); break;
             case JLP7_BOOL:   fprintf(stderr, "  %s = %s (bool)\n",    v->name, v->val.b ? "true" : "false"); break;
             case JLP7_STRING: fprintf(stderr, "  %s = \"%s\" (str)\n", v->name, v->val.s); break;
+            case JLP7_ARRAY:
+                fprintf(stderr, "  %s = [%zu doubles] (array)\n", v->name, v->arr_len);
+                break;
         }
     }
 }

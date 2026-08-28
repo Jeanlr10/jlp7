@@ -111,6 +111,11 @@ char *jlp7_java_build_source(const char *code,
                 ds_append_c_escaped(src, v->val.s);
                 ds_append(src, "\";\n");
                 break;
+            case JLP7_ARRAY:
+                /* Not supported in Java blocks yet -- array vars from
+                 * env are simply not exposed here, same "best effort"
+                 * policy the scanner already applies to pointer types. */
+                break;
         }
     }
 

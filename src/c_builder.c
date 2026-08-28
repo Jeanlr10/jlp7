@@ -111,13 +111,34 @@ Jlp7CVarDecl *jlp7_c_scan_decls(const char *code, int *count) {
                        && ni < JLP7_NAME_MAX - 1)
                     name[ni++] = *after++;
 
-                if (ni > 0 && (*after == ' ' || *after == '=' || *after == ';')) {
+                if (ni > 0 && (*after == ' ' || *after == '=' || *after == ';' || *after == '[')) {
                     if ((size_t)*count == cap) {
                         cap *= 2;
                         decls = realloc(decls, sizeof(Jlp7CVarDecl) * cap);
                     }
                     strncpy(decls[*count].type, C_TYPES[t], JLP7_TYPE_MAX - 1);
                     strncpy(decls[*count].name, name, JLP7_NAME_MAX - 1);
+                    decls[*count].is_array = 0;
+                    decls[*count].arr_len  = 0;
+
+                    /* type name[N]  -- fixed-size array declaration.
+                     * N must be a literal integer; anything else
+                     * (a #define, a variable, no size at all) is not
+                     * something we can size the JSON printer loop
+                     * with, so it's left as is_array = 0 and simply
+                     * won't be exported -- same "best effort" policy
+                     * as pointer types below. */
+                    while (*after == ' ' || *after == '\t') after++;
+                    if (*after == '[') {
+                        const char *num = after + 1;
+                        char *endptr;
+                        long long n = strtoll(num, &endptr, 10);
+                        if (endptr != num && *endptr == ']' && n > 0) {
+                            decls[*count].is_array = 1;
+                            decls[*count].arr_len  = n;
+                        }
+                    }
+
                     (*count)++;
                 }
                 break;
@@ -192,6 +213,16 @@ char *jlp7_c_build_source(const char *code,
                 ds_append_c_escaped(src, v->val.s);
                 ds_append(src, "\";\n");
                 break;
+            case JLP7_ARRAY:
+                ds_appendf(src, "double %s[%zu] = {", v->name, v->arr_len);
+                for (size_t k = 0; k < v->arr_len; k++) {
+                    if (k) ds_append(src, ", ");
+                    ds_appendf(src, "%.17g", v->val.arr[k]);
+                }
+                ds_append(src, "};\n");
+                ds_appendf(src, "const long long %s_len = %zuLL;\n",
+                           v->name, v->arr_len);
+                break;
         }
     }
     ds_append(src, "\n");
@@ -217,8 +248,26 @@ char *jlp7_c_build_source(const char *code,
     /* Newly declared vars in this block */
     for (int i = 0; i < ndecls; i++) {
         const char *n = decls[i].name;
-        Jlp7Type jtype = c_type_to_jlp7(decls[i].type);
         if (!first) ds_append(src, "    printf(\", \");\n");
+
+        if (decls[i].is_array) {
+            /* print "name": [v0, v1, ...] by looping at runtime --
+             * the loop variable is scoped to this for-statement (C99),
+             * so reusing the same name across multiple printed arrays
+             * in one generated program is safe. */
+            ds_appendf(src, "    printf(\"\\\"%s\\\": [\");\n", n);
+            ds_appendf(src,
+                "    for (long long __jlp7_i = 0; __jlp7_i < %lldLL; __jlp7_i++) {\n"
+                "        if (__jlp7_i) printf(\", \");\n"
+                "        printf(\"%%.17g\", (double)%s[__jlp7_i]);\n"
+                "    }\n",
+                decls[i].arr_len, n);
+            ds_append(src, "    printf(\"]\");\n");
+            first = 0;
+            continue;
+        }
+
+        Jlp7Type jtype = c_type_to_jlp7(decls[i].type);
         switch (jtype) {
             case JLP7_INT:
                 ds_appendf(src,
@@ -240,6 +289,9 @@ char *jlp7_c_build_source(const char *code,
                 ds_appendf(src,
                     "    printf(\"\\\"" "%s" "\\\": \\\"%%s\\\"\", %s);\n",
                     n, n);
+                break;
+            case JLP7_ARRAY:
+                /* unreachable: handled by the is_array branch above */
                 break;
         }
         first = 0;
@@ -274,6 +326,16 @@ char *jlp7_c_build_source(const char *code,
                 ds_appendf(src,
                     "    printf(\"\\\"" "%s" "\\\": \\\"%%s\\\"\", %s);\n",
                     v->name, v->name);
+                break;
+            case JLP7_ARRAY:
+                ds_appendf(src, "    printf(\"\\\"%s\\\": [\");\n", v->name);
+                ds_appendf(src,
+                    "    for (long long __jlp7_i = 0; __jlp7_i < %s_len; __jlp7_i++) {\n"
+                    "        if (__jlp7_i) printf(\", \");\n"
+                    "        printf(\"%%.17g\", (double)%s[__jlp7_i]);\n"
+                    "    }\n",
+                    v->name, v->name);
+                ds_append(src, "    printf(\"]\");\n");
                 break;
         }
         first = 0;
