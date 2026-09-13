@@ -22,7 +22,7 @@ printf("result = %lld\n", result);  // result = 60
 ## Build
 
 ```sh
-git clone https://github.com/yourname/jlp7
+git clone https://github.com/jeanlr10/jlp7
 cd jlp7
 make
 make test
