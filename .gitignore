@@ -1,6 +1,7 @@
 *.o
 *.d
 jlp7_test
+jlp7_thread_test
 libjlp7.so
 __pycache__/
 *.egg-info/

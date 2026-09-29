@@ -109,6 +109,19 @@ error. Values with no C/Java form (dicts, objects) stay in Python and are
 skipped, unless you set `strict` (`JLP7('c', strict=True)`, or
 `cfg.strict = 1`), which makes them a `marshal` error too.
 
+## Threads
+
+Any number of threads can call `jlp7_exec` at once, as long as each uses
+its own `Jlp7Env`. Python blocks take the GIL and run one at a time; C and
+Java blocks run in child processes and run in parallel. Do not share one
+`Jlp7Env` between threads without your own lock. The full rules are in the
+"Threading" comment in `include/jlp7.h`. From Python, `JLP7.run()` is safe
+to call from many `threading.Thread`s.
+
+```sh
+make test-threads   # 16 threads, mixed pass/fail blocks, plus C blocks
+```
+
 ## Supported Types
 
 | C / Java       | Python  |

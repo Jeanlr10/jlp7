@@ -1,7 +1,7 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c11 -Iinclude -MMD -MP \
+CFLAGS  = -pthread -Wall -Wextra -std=c11 -Iinclude -MMD -MP \
           $(shell python3-config --includes)
-LDFLAGS = $(shell python3-config --embed --ldflags 2>/dev/null || \
+LDFLAGS = -pthread $(shell python3-config --embed --ldflags 2>/dev/null || \
                   python3-config --ldflags) \
           -lpython3.12
 
@@ -17,15 +17,19 @@ SRC = src/env.c          \
       src/jlp7.c
 
 OBJ     = $(SRC:.c=.o)
-DEPS    = $(OBJ:.o=.d) src/main.d
+DEPS    = $(OBJ:.o=.d) src/main.d src/thread_test.d
 TEST    = jlp7_test
+THREADT = jlp7_thread_test
 LIB     = libjlp7.so
 
-.PHONY: all test lib clean
+.PHONY: all test test-threads lib clean
 
 all: $(TEST)
 
 $(TEST): $(OBJ) src/main.o
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+$(THREADT): $(OBJ) src/thread_test.o
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 lib: $(OBJ)
@@ -37,7 +41,10 @@ lib: $(OBJ)
 test: $(TEST)
 	./$(TEST)
 
+test-threads: $(THREADT)
+	./$(THREADT) --with-c
+
 -include $(DEPS)
 
 clean:
-	rm -f $(OBJ) $(DEPS) src/main.o $(TEST) $(LIB)
+	rm -f $(OBJ) $(DEPS) src/main.o src/thread_test.o $(TEST) $(THREADT) $(LIB)

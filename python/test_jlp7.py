@@ -266,6 +266,36 @@ def test_strict_marshal():
         assert_eq(e.kind, "marshal", "strict raises marshal error")
 
 
+def test_threads():
+    print("\n── Threads: JLP7 from many Python threads ──")
+    import threading
+    results = {}
+
+    def work(tid):
+        pg = JLP7("c")
+        env = {"n": 0, "tid": tid}
+        try:
+            for _ in range(50):
+                env = pg.run("/p\nn = n + tid\np/\n", env=env)
+            try:
+                pg.run("/p\nn = 0\nraise KeyError('k')\np/\n", env=env)
+                results[tid] = "no error raised"
+                return
+            except JLP7Error as e:
+                if e.exc_type != "KeyError":
+                    results[tid] = f"wrong error {e.exc_type}"
+                    return
+            results[tid] = env["n"]
+        except Exception as e:  # noqa: BLE001
+            results[tid] = f"exception {e!r}"
+
+    threads = [threading.Thread(target=work, args=(t,)) for t in range(1, 9)]
+    for t in threads: t.start()
+    for t in threads: t.join()
+    for tid in range(1, 9):
+        assert_eq(results.get(tid), 50 * tid, f"thread {tid} result")
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -283,6 +313,7 @@ if __name__ == "__main__":
     test_type_error()
     test_error_fields()
     test_strict_marshal()
+    test_threads()
     test_java_basic()
     test_java_string()
 

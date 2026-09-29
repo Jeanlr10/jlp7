@@ -36,6 +36,28 @@ typedef struct {
     } val;
 } Jlp7Var;
 
+/* ── Threading ──────────────────────────────────────────────────────── *
+ *
+ * The library is thread-safe under these rules:
+ *
+ *  1. Different threads may call jlp7_exec / jlp7_exec_ex / jlp7_run_*
+ *     at the same time, provided each call uses its own Jlp7Env.
+ *  2. A Jlp7Env (and a Jlp7Error) must not be used by two threads at the
+ *     same time. The library does no locking on them. Hand one over
+ *     between threads only with your own synchronisation.
+ *  3. A Jlp7Config is only read during a call. Sharing one is fine as
+ *     long as nobody changes it while a call is running.
+ *  4. Python blocks run one at a time: they share one interpreter and
+ *     take the GIL. C and Java blocks run in child processes and do run
+ *     in parallel, and they do not hold the GIL while they run.
+ *  5. The interpreter starts on the first Python block and is never
+ *     finalised. If the process already runs Python (for example the
+ *     library is loaded through ctypes), that interpreter is used.
+ *  6. Python blocks run under PyGILState_Ensure, so the calling thread
+ *     need not hold the GIL. Do not call into the library from a
+ *     destructor or signal handler.
+ */
+
 /* ── Variable store ─────────────────────────────────────────────────── */
 
 typedef struct {

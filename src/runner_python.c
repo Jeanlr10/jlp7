@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include "jlp7.h"
 
 /*
@@ -19,19 +20,31 @@
  * Errors are reported through Jlp7Error (see jlp7.h). When the caller
  * passes err == NULL, the message is printed to stderr instead.
  *
- * GIL: every entry point takes the GIL with PyGILState_Ensure(), so it is
+ * Threading: see "Threading" in jlp7.h for the contract. In short, any
+ * number of threads may call in at once, each with its own Jlp7Env.
+ * Every entry point takes the GIL with PyGILState_Ensure(), so it is also
  * safe to call from a thread that does not hold it (for example from
- * Python via ctypes). If Python is already running in the process, it is
+ * Python via ctypes). If Python is already running in the process it is
  * not initialised a second time.
  */
 
-static int python_initialized = 0;
+static pthread_once_t python_once = PTHREAD_ONCE_INIT;
+
+/* Runs exactly once, on whichever thread gets here first. */
+static void init_python_once(void) {
+    if (Py_IsInitialized()) return;   /* hosted in a Python process */
+
+    Py_Initialize();
+    /* Py_Initialize leaves the calling thread holding the GIL. Release it,
+     * or every other thread would block forever in PyGILState_Ensure().
+     * The saved thread state is deliberately never restored: from here on
+     * all access goes through PyGILState_Ensure/Release, including this
+     * thread's. */
+    (void)PyEval_SaveThread();
+}
 
 static void ensure_python(void) {
-    if (!python_initialized) {
-        if (!Py_IsInitialized()) Py_Initialize();
-        python_initialized = 1;
-    }
+    pthread_once(&python_once, init_python_once);
 }
 
 /* ── Errors ─────────────────────────────────────────────────────────── */
