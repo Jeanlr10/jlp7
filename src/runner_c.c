@@ -151,8 +151,14 @@ int jlp7_run_c(const char *code, Jlp7Env *env) {
     }
 
     /* 8. Parse vars back into env */
-    if (vars_json && vars_json[0])
-        jlp7_c_parse_vars(vars_json, env);
+    if (vars_json && vars_json[0]) {
+        char why[96];
+        if (jlp7_c_parse_vars(vars_json, env, why, sizeof(why)) != 0) {
+            fprintf(stderr, "[jlp7:c] could not read variables back: %s\n", why);
+            free(vars_json);
+            return -1;
+        }
+    }
     free(vars_json);
 
     return 0;

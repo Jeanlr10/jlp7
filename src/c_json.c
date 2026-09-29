@@ -9,6 +9,7 @@
  * c_json.c — the C runner uses the same __VARS__:{...} format as the Java
  * runner, so we just delegate to the already-hardened Java JSON parser.
  */
-void jlp7_c_parse_vars(const char *json, Jlp7Env *env) {
-    jlp7_java_parse_vars(json, env);
+int jlp7_c_parse_vars(const char *json, Jlp7Env *env,
+                      char *why, size_t why_len) {
+    return jlp7_java_parse_vars(json, env, why, why_len);
 }

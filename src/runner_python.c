@@ -161,7 +161,7 @@ static void capture_exception(Jlp7Error *err, Jlp7ErrorKind kind) {
 
 static void set_marshal_error(Jlp7Error *err, const char *var, const char *why) {
     err->kind = JLP7_ERR_MARSHAL;
-    size_t n = strlen(var) + strlen(why) + 32;
+    size_t n = strlen(var) + strlen(why) + 64;
     err->message = malloc(n);
     if (err->message)
         snprintf(err->message, n, "variable '%s' cannot be exported: %s", var, why);
@@ -169,25 +169,57 @@ static void set_marshal_error(Jlp7Error *err, const char *var, const char *why) 
 
 /* ── Jlp7Env → PyDict ───────────────────────────────────────────────── */
 
+/* New reference, or NULL with a Python error set. */
+static PyObject *var_to_py(const Jlp7Var *v) {
+    switch (v->type) {
+        case JLP7_INT:    return PyLong_FromLongLong(v->val.i);
+        case JLP7_FLOAT:  return PyFloat_FromDouble(v->val.f);
+        case JLP7_BOOL:   return PyBool_FromLong(v->val.b);
+        case JLP7_STRING: return PyUnicode_FromString(v->val.s);
+        case JLP7_NULL:   Py_RETURN_NONE;
+        case JLP7_ARRAY: {
+            PyObject *list = PyList_New((Py_ssize_t)v->arr_len);
+            if (!list) return NULL;
+            for (size_t k = 0; k < v->arr_len; k++) {
+                PyObject *f = PyFloat_FromDouble(v->val.arr[k]);
+                if (!f) { Py_DECREF(list); return NULL; }
+                PyList_SET_ITEM(list, (Py_ssize_t)k, f);
+            }
+            return list;
+        }
+        case JLP7_LIST: {
+            PyObject *list = PyList_New((Py_ssize_t)v->arr_len);
+            if (!list) return NULL;
+            for (size_t k = 0; k < v->arr_len; k++) {
+                PyObject *item = var_to_py(&v->val.items[k]);
+                if (!item) { Py_DECREF(list); return NULL; }
+                PyList_SET_ITEM(list, (Py_ssize_t)k, item);
+            }
+            return list;
+        }
+        case JLP7_DICT: {
+            PyObject *d = PyDict_New();
+            if (!d) return NULL;
+            for (size_t k = 0; k < v->arr_len; k++) {
+                PyObject *item = var_to_py(&v->val.items[k]);
+                if (!item || PyDict_SetItemString(d, v->val.items[k].name, item) != 0) {
+                    Py_XDECREF(item);
+                    Py_DECREF(d);
+                    return NULL;
+                }
+                Py_DECREF(item);
+            }
+            return d;
+        }
+    }
+    Py_RETURN_NONE;
+}
+
 static PyObject *env_to_pydict(const Jlp7Env *env) {
     PyObject *d = PyDict_New();
     for (size_t i = 0; i < env->count; i++) {
         const Jlp7Var *v = &env->vars[i];
-        PyObject *val = NULL;
-        switch (v->type) {
-            case JLP7_INT:    val = PyLong_FromLongLong(v->val.i);  break;
-            case JLP7_FLOAT:  val = PyFloat_FromDouble(v->val.f);   break;
-            case JLP7_BOOL:   val = PyBool_FromLong(v->val.b);      break;
-            case JLP7_STRING: val = PyUnicode_FromString(v->val.s); break;
-            case JLP7_ARRAY: {
-                val = PyList_New((Py_ssize_t)v->arr_len);
-                for (size_t k = 0; k < v->arr_len; k++) {
-                    PyList_SET_ITEM(val, (Py_ssize_t)k,
-                                     PyFloat_FromDouble(v->val.arr[k]));
-                }
-                break;
-            }
-        }
+        PyObject *val = var_to_py(v);
         if (val) {
             PyDict_SetItemString(d, v->name, val);
             Py_DECREF(val);
@@ -200,6 +232,8 @@ static PyObject *env_to_pydict(const Jlp7Env *env) {
 
 /* ── PyDict → Jlp7Env ───────────────────────────────────────────────── */
 
+#define MAX_DEPTH 64
+
 /* Recursively flatten a Python list/tuple, or anything exposing
  * .tolist() (numpy arrays and similar), into a growable double
  * buffer. Nested sequences (e.g. a 2D confusion matrix) are flattened
@@ -208,12 +242,14 @@ static PyObject *env_to_pydict(const Jlp7Env *env) {
  * Returns 0 on success, -1 if the object contains a non-numeric
  * element or a number that does not fit a double. Never leaves a
  * Python exception set. */
-static int flatten_numeric(PyObject *obj, double **buf, size_t *len, size_t *cap) {
+static int flatten_numeric(PyObject *obj, double **buf, size_t *len, size_t *cap,
+                           int depth) {
+    if (depth > MAX_DEPTH) return -1;   /* too deep, or a cycle */
     if (!PyList_Check(obj) && !PyTuple_Check(obj) &&
         PyObject_HasAttrString(obj, "tolist")) {
         PyObject *as_list = PyObject_CallMethod(obj, "tolist", NULL);
         if (!as_list) { PyErr_Clear(); return -1; }
-        int rc = flatten_numeric(as_list, buf, len, cap);
+        int rc = flatten_numeric(as_list, buf, len, cap, depth + 1);
         Py_DECREF(as_list);
         return rc;
     }
@@ -223,7 +259,7 @@ static int flatten_numeric(PyObject *obj, double **buf, size_t *len, size_t *cap
         for (Py_ssize_t i = 0; i < n; i++) {
             PyObject *item = PySequence_GetItem(obj, i);
             if (!item) { PyErr_Clear(); return -1; }
-            int rc = flatten_numeric(item, buf, len, cap);
+            int rc = flatten_numeric(item, buf, len, cap, depth + 1);
             Py_DECREF(item);
             if (rc != 0) return -1;
         }
@@ -250,18 +286,147 @@ static int flatten_numeric(PyObject *obj, double **buf, size_t *len, size_t *cap
 
 static int is_array_like(PyObject *obj) {
     if (PyList_Check(obj) || PyTuple_Check(obj)) return 1;
-    if (PyUnicode_Check(obj) || PyBytes_Check(obj)) return 0;
+    if (PyUnicode_Check(obj) || PyBytes_Check(obj) || PyDict_Check(obj)) return 0;
     return PyObject_HasAttrString(obj, "tolist");
+}
+
+/* Outcome of converting one Python value. */
+enum { CONV_OK = 0, CONV_UNREP = 1, CONV_FATAL = 2 };
+
+typedef struct {
+    char why[160];
+} Conv;
+
+static int conv_note(Conv *c, int rc, const char *fmt, const char *arg) {
+    snprintf(c->why, sizeof(c->why), fmt, arg ? arg : "");
+    return rc;
+}
+
+/* Convert `obj` into `out` (which must be an unnamed JLP7_NULL value).
+ *
+ *   None                    -> NULL
+ *   bool / int / float / str-> scalar
+ *   list, tuple, ndarray    -> ARRAY if every leaf is a number (nesting is
+ *                              flattened row-major, as it always was),
+ *                              else LIST of converted items
+ *   dict with str keys      -> DICT
+ *
+ * CONV_UNREP: no representation (set, object, non-str key, too deep).
+ * CONV_FATAL: has one but it does not fit (int > long long, bad UTF-8).
+ * On anything but CONV_OK, `out` is left cleared. */
+static int py_to_var(PyObject *obj, Jlp7Var *out, int depth, Conv *c) {
+    if (depth > MAX_DEPTH)
+        return conv_note(c, CONV_UNREP, "nested too deeply (or contains itself)%s", "");
+
+    if (obj == Py_None) { jlp7_var_set_null(out); return CONV_OK; }
+
+    if (PyBool_Check(obj)) {
+        jlp7_var_set_bool(out, PyObject_IsTrue(obj));
+        return CONV_OK;
+    }
+    if (PyLong_Check(obj)) {
+        int overflow = 0;
+        long long n = PyLong_AsLongLongAndOverflow(obj, &overflow);
+        if (overflow || (n == -1 && PyErr_Occurred())) {
+            PyErr_Clear();
+            return conv_note(c, CONV_FATAL, "integer does not fit in long long%s", "");
+        }
+        jlp7_var_set_int(out, n);
+        return CONV_OK;
+    }
+    if (PyFloat_Check(obj)) {
+        jlp7_var_set_float(out, PyFloat_AsDouble(obj));
+        return CONV_OK;
+    }
+    if (PyUnicode_Check(obj)) {
+        const char *str = PyUnicode_AsUTF8(obj);
+        if (!str) {
+            PyErr_Clear();
+            return conv_note(c, CONV_FATAL, "string is not valid UTF-8%s", "");
+        }
+        jlp7_var_set_str(out, str);
+        return CONV_OK;
+    }
+
+    if (PyDict_Check(obj)) {
+        jlp7_var_set_dict(out);
+        PyObject *key, *val;
+        Py_ssize_t pos = 0;
+        while (PyDict_Next(obj, &pos, &key, &val)) {
+            const char *k = PyUnicode_Check(key) ? PyUnicode_AsUTF8(key) : NULL;
+            if (!k) {
+                PyErr_Clear();
+                jlp7_var_clear(out);
+                return conv_note(c, CONV_UNREP, "dict has a non-string key%s", "");
+            }
+            Jlp7Var *slot = jlp7_dict_put(out, k);
+            int rc = slot ? py_to_var(val, slot, depth + 1, c) : CONV_FATAL;
+            if (rc != CONV_OK) {
+                jlp7_var_clear(out);
+                if (!slot) return conv_note(c, CONV_FATAL, "out of memory%s", "");
+                return rc;
+            }
+        }
+        return CONV_OK;
+    }
+
+    if (is_array_like(obj)) {
+        double *buf = NULL;
+        size_t len = 0, cap = 0;
+        if (flatten_numeric(obj, &buf, &len, &cap, depth) == 0 && len > 0) {
+            jlp7_var_set_array(out, buf, len);
+            free(buf);
+            return CONV_OK;
+        }
+        free(buf);
+
+        PyObject *seq = obj;
+        int owned = 0;
+        if (!PyList_Check(obj) && !PyTuple_Check(obj)) {
+            seq = PyObject_CallMethod(obj, "tolist", NULL);
+            if (!seq) {
+                PyErr_Clear();
+                return conv_note(c, CONV_UNREP, "tolist() failed%s", "");
+            }
+            owned = 1;
+            if (!PyList_Check(seq) && !PyTuple_Check(seq)) {   /* 0-d array */
+                int rc = py_to_var(seq, out, depth + 1, c);
+                Py_DECREF(seq);
+                return rc;
+            }
+        }
+        jlp7_var_set_list(out);
+        Py_ssize_t n = PySequence_Size(seq);
+        int rc = CONV_OK;
+        for (Py_ssize_t i = 0; i < n && rc == CONV_OK; i++) {
+            PyObject *item = PySequence_GetItem(seq, i);
+            Jlp7Var *slot = item ? jlp7_list_push(out) : NULL;
+            if (!item || !slot) {
+                PyErr_Clear();
+                rc = conv_note(c, CONV_FATAL, "could not read list item%s", "");
+            } else {
+                rc = py_to_var(item, slot, depth + 1, c);
+            }
+            Py_XDECREF(item);
+        }
+        if (owned) Py_DECREF(seq);
+        if (rc != CONV_OK) jlp7_var_clear(out);
+        return rc;
+    }
+
+    return conv_note(c, CONV_UNREP, "no representation for type '%.60s'",
+                     Py_TYPE(obj)->tp_name);
 }
 
 /* Read the public variables of d into `out` (a scratch env).
  * Returns 0 on success, -1 with *err set on a marshal error.
  *
- * A value with no env representation (dict, custom object, fitted model)
- * is left in Python: skipped when strict == 0, a marshal error when
- * strict == 1. A value that has a representation but does not fit it
- * (int outside long long, string with lone surrogates) is always an
- * error -- exporting a wrong value silently is worse than failing. */
+ * A value with no env representation (custom object, fitted model, a dict
+ * holding a set) is left in Python: skipped when strict == 0, a marshal
+ * error when strict == 1. A value that has a representation but does not
+ * fit it (int outside long long, string with lone surrogates) is always
+ * an error -- exporting a wrong value silently is worse than failing.
+ * A container is exported whole or not at all. */
 static int export_locals(PyObject *d, Jlp7Env *out, int strict, Jlp7Error *err) {
     PyObject *key, *val;
     Py_ssize_t pos = 0;
@@ -274,46 +439,21 @@ static int export_locals(PyObject *d, Jlp7Env *out, int strict, Jlp7Error *err) 
         if (PyType_Check(val))     continue;
         if (PyModule_Check(val))   continue;
 
-        if (PyBool_Check(val)) {
-            /* Must check bool before long — bool is a subtype of int */
-            jlp7_env_set_bool(out, name, PyObject_IsTrue(val));
-        } else if (PyLong_Check(val)) {
-            int overflow = 0;
-            long long n = PyLong_AsLongLongAndOverflow(val, &overflow);
-            if (overflow || (n == -1 && PyErr_Occurred())) {
-                PyErr_Clear();
-                set_marshal_error(err, name, "integer does not fit in long long");
-                return -1;
-            }
-            jlp7_env_set_int(out, name, n);
-        } else if (PyFloat_Check(val)) {
-            jlp7_env_set_float(out, name, PyFloat_AsDouble(val));
-        } else if (PyUnicode_Check(val)) {
-            const char *s = PyUnicode_AsUTF8(val);
-            if (!s) {
-                PyErr_Clear();
-                set_marshal_error(err, name, "string is not valid UTF-8");
-                return -1;
-            }
-            jlp7_env_set_str(out, name, s);
-        } else if (is_array_like(val)) {
-            double *buf = NULL;
-            size_t len = 0, cap = 0;
-            if (flatten_numeric(val, &buf, &len, &cap) == 0 && len > 0) {
-                jlp7_env_set_array(out, name, buf, len);
-            } else if (strict) {
-                free(buf);
-                set_marshal_error(err, name, "not a non-empty list of numbers");
-                return -1;
-            }
-            free(buf);
-        } else if (strict) {
-            char why[128];
-            snprintf(why, sizeof(why), "no representation for type '%.60s'",
-                     Py_TYPE(val)->tp_name);
-            set_marshal_error(err, name, why);
+        Jlp7Var tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        tmp.type = JLP7_NULL;
+        Conv c = { "" };
+        int rc = py_to_var(val, &tmp, 0, &c);
+
+        if (rc == CONV_OK) {
+            Jlp7Var *slot = jlp7_env_slot(out, name);
+            if (slot) jlp7_var_move(slot, &tmp);
+            jlp7_var_clear(&tmp);
+        } else if (rc == CONV_FATAL || strict) {
+            set_marshal_error(err, name, c.why);
             return -1;
         }
+        /* CONV_UNREP, not strict: stays in Python. */
     }
     return 0;
 }

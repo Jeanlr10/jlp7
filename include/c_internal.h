@@ -25,6 +25,7 @@ char         *jlp7_c_build_source(const char *code,
                                    int ndecls);
 
 /* c_json.c — reuses the Java JSON parser (same __VARS__ format) */
-void jlp7_c_parse_vars(const char *json, Jlp7Env *env);
+int  jlp7_c_parse_vars(const char *json, Jlp7Env *env,
+                       char *why, size_t why_len);
 
 #endif /* JLP7_C_INTERNAL_H */

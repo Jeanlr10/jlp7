@@ -213,6 +213,8 @@ char *jlp7_c_build_source(const char *code,
                 ds_append_c_escaped(src, v->val.s);
                 ds_append(src, "\";\n");
                 break;
+            case JLP7_LIST: case JLP7_DICT: case JLP7_NULL:
+                break;   /* no C form: passes through the env untouched */
             case JLP7_ARRAY:
                 ds_appendf(src, "double %s[%zu] = {", v->name, v->arr_len);
                 for (size_t k = 0; k < v->arr_len; k++) {

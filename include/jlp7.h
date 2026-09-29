@@ -13,29 +13,6 @@
  * Public API. Include this header and link against libjlp7.so.
  */
 
-/* ── Variable types ─────────────────────────────────────────────────── */
-
-typedef enum {
-    JLP7_INT,
-    JLP7_FLOAT,
-    JLP7_BOOL,
-    JLP7_STRING,
-    JLP7_ARRAY,   /* array of doubles, flattened; arr_len tracks count */
-} Jlp7Type;
-
-typedef struct {
-    char     *name;
-    Jlp7Type  type;
-    size_t    arr_len;  /* only meaningful when type == JLP7_ARRAY */
-    union {
-        long long  i;
-        double     f;
-        int        b;   /* 0 = false, 1 = true */
-        char      *s;
-        double    *arr;
-    } val;
-} Jlp7Var;
-
 /* ── Threading ──────────────────────────────────────────────────────── *
  *
  * The library is thread-safe under these rules:
@@ -58,6 +35,41 @@ typedef struct {
  *     destructor or signal handler.
  */
 
+/* ── Variable types ─────────────────────────────────────────────────── */
+
+typedef enum {
+    JLP7_INT,
+    JLP7_FLOAT,
+    JLP7_BOOL,
+    JLP7_STRING,
+    JLP7_ARRAY,   /* flat array of doubles; arr_len tracks count */
+    JLP7_LIST,    /* ordered, mixed-type children; arr_len = child count */
+    JLP7_DICT,    /* string-keyed children; arr_len = entry count */
+    JLP7_NULL,    /* no value (Python None, JSON null) */
+} Jlp7Type;
+
+/* One value. An env variable, a dict entry and a list item are all a
+ * Jlp7Var, so values nest to any depth.
+ *
+ *   name:  env variable -> the variable name
+ *          dict entry   -> the key
+ *          list item    -> NULL
+ */
+typedef struct Jlp7Var Jlp7Var;
+struct Jlp7Var {
+    char     *name;
+    Jlp7Type  type;
+    size_t    arr_len;  /* ARRAY: doubles; LIST/DICT: children */
+    union {
+        long long  i;
+        double     f;
+        int        b;   /* 0 = false, 1 = true */
+        char      *s;
+        double    *arr;
+        Jlp7Var   *items;   /* LIST / DICT children */
+    } val;
+};
+
 /* ── Variable store ─────────────────────────────────────────────────── */
 
 typedef struct {
@@ -75,6 +87,48 @@ void      jlp7_env_set_str(Jlp7Env *env, const char *name, const char *val);
 void      jlp7_env_set_array(Jlp7Env *env, const char *name,
                               const double *values, size_t len);
 Jlp7Var  *jlp7_env_get(Jlp7Env *env, const char *name);
+void      jlp7_env_dump(const Jlp7Env *env);   /* debug print */
+
+/* Get the variable `name`, creating it if needed. Its old contents are
+ * freed and it is left as JLP7_NULL. Fill it with the jlp7_var_set_*
+ * functions below. */
+Jlp7Var  *jlp7_env_slot(Jlp7Env *env, const char *name);
+
+/* ── Building and reading nested values ─────────────────────────────── *
+ *
+ * Every jlp7_var_set_* frees what the value held before. Strings and
+ * arrays are copied.
+ *
+ * Pointer lifetime: jlp7_env_slot, jlp7_env_set_* and jlp7_list_push /
+ * jlp7_dict_put may move memory. A Jlp7Var* into an env is valid until
+ * the next variable is added to that env. A child pointer is valid until
+ * the next push/put on the same container. Fill a child completely
+ * before you add its sibling.
+ */
+
+void      jlp7_var_set_int(Jlp7Var *v, long long val);
+void      jlp7_var_set_float(Jlp7Var *v, double val);
+void      jlp7_var_set_bool(Jlp7Var *v, int val);
+void      jlp7_var_set_str(Jlp7Var *v, const char *val);
+void      jlp7_var_set_array(Jlp7Var *v, const double *values, size_t len);
+void      jlp7_var_set_null(Jlp7Var *v);
+void      jlp7_var_set_list(Jlp7Var *v);   /* empty list */
+void      jlp7_var_set_dict(Jlp7Var *v);   /* empty dict */
+
+/* Append a new JLP7_NULL item to a list. NULL if v is not a list. */
+Jlp7Var  *jlp7_list_push(Jlp7Var *list);
+/* Add key to a dict (an existing key is reset). NULL if v is not a dict. */
+Jlp7Var  *jlp7_dict_put(Jlp7Var *dict, const char *key);
+Jlp7Var  *jlp7_list_at(const Jlp7Var *list, size_t index);
+Jlp7Var  *jlp7_dict_get(const Jlp7Var *dict, const char *key);
+
+/* Deep copy src into dst (dst keeps its own name). */
+void      jlp7_var_copy(Jlp7Var *dst, const Jlp7Var *src);
+/* Move src's value into dst (dst keeps its name; src's name is freed).
+ * src is left as an unnamed JLP7_NULL. */
+void      jlp7_var_move(Jlp7Var *dst, Jlp7Var *src);
+/* Free what v holds and make it JLP7_NULL. Keeps the name. */
+void      jlp7_var_clear(Jlp7Var *v);
 
 /* Deep copy of an env. Returns NULL on allocation failure. */
 Jlp7Env  *jlp7_env_clone(const Jlp7Env *env);
@@ -83,7 +137,6 @@ void      jlp7_env_merge(Jlp7Env *dst, const Jlp7Env *src);
 /* Move the contents of src into dst and free src. dst's old contents
  * are freed. Used to roll an env back to a snapshot. */
 void      jlp7_env_replace(Jlp7Env *dst, Jlp7Env *src);
-void      jlp7_env_dump(const Jlp7Env *env);   /* debug print */
 
 /* ── Block types ────────────────────────────────────────────────────── */
 

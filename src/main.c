@@ -4,7 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "jlp7.h"
+#include "java_internal.h"
 
 static int passed = 0;
 static int failed = 0;
@@ -255,15 +257,211 @@ static void test_marshal_errors(void) {
     ASSERT(jlp7_env_get(env, "big") == NULL,          "nothing exported");
     jlp7_error_clear(&err);
 
-    /* dict: skipped by default ... */
-    rc = jlp7_run_python_ex("d = {'a': 1}\nn = 3\n", env, 1, 0, &err);
+    /* set: no representation, skipped by default ... */
+    rc = jlp7_run_python_ex("d = {1, 2}\nn = 3\n", env, 1, 0, &err);
     ASSERT(rc == 0 && jlp7_env_get(env, "d") == NULL && jlp7_env_get(env, "n"),
-                                                      "non-strict skips dict, keeps n");
+                                                      "non-strict skips set, keeps n");
 
     /* ... and an error when strict, with no partial export */
-    rc = jlp7_run_python_ex("m = 9\nd = {'a': 1}\n", env, 1, 1, &err);
-    ASSERT(rc == -1 && err.kind == JLP7_ERR_MARSHAL, "strict: dict is a marshal error");
+    rc = jlp7_run_python_ex("m = 9\nd = {1, 2}\n", env, 1, 1, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_MARSHAL, "strict: set is a marshal error");
     ASSERT(jlp7_env_get(env, "m") == NULL,            "strict: no partial export");
+    jlp7_error_clear(&err);
+
+    jlp7_env_free(env);
+}
+
+/* ── Nested values ───────────────────────────────────────────────────── */
+
+static void test_json_nested(void) {
+    printf("\n── Nested: JSON wire format ──\n");
+    Jlp7Env *env = jlp7_env_new();
+    char why[96] = "";
+
+    int rc = jlp7_java_parse_vars(
+        "{\"n\": 3, \"f\": 2.5, \"e\": 1E3, \"t\": true, \"z\": null,"
+        " \"s\": \"a\\\"b\\n\\u00e9\\ud83d\\ude00\","
+        " \"nums\": [1, 2.5, 3], \"none\": [],"
+        " \"mix\": [1, \"two\", [3, 4], {\"k\": false}],"
+        " \"cfg\": {\"name\": \"x\", \"pos\": {\"x\": 1, \"y\": 2}, \"w\": [0.5, 1.5]},"
+        " \"nan\": NaN, \"inf\": Infinity, \"ninf\": -Infinity, \"cnan\": -nan,"
+        " \"big\": 99999999999999999999}",
+        env, why, sizeof(why));
+    ASSERT(rc == 0, "nested JSON parses");
+
+    Jlp7Var *v;
+    v = jlp7_env_get(env, "n");   ASSERT(v && v->type == JLP7_INT && v->val.i == 3, "int");
+    v = jlp7_env_get(env, "f");   ASSERT(v && v->type == JLP7_FLOAT && v->val.f == 2.5, "float");
+    v = jlp7_env_get(env, "e");   ASSERT(v && v->type == JLP7_FLOAT && v->val.f == 1000.0, "1E3 is a float");
+    v = jlp7_env_get(env, "t");   ASSERT(v && v->type == JLP7_BOOL && v->val.b == 1, "bool");
+    v = jlp7_env_get(env, "z");   ASSERT(v && v->type == JLP7_NULL, "null");
+    v = jlp7_env_get(env, "s");
+    ASSERT(v && v->type == JLP7_STRING &&
+           strcmp(v->val.s, "a\"b\n\xc3\xa9\xf0\x9f\x98\x80") == 0,
+           "string escapes, \\u00e9 and a surrogate pair");
+    v = jlp7_env_get(env, "nums");
+    ASSERT(v && v->type == JLP7_ARRAY && v->arr_len == 3 && v->val.arr[1] == 2.5,
+           "numeric array stays a flat ARRAY");
+    v = jlp7_env_get(env, "none");
+    ASSERT(v && v->type == JLP7_ARRAY && v->arr_len == 0, "[] is an empty ARRAY");
+
+    v = jlp7_env_get(env, "mix");
+    ASSERT(v && v->type == JLP7_LIST && v->arr_len == 4, "mixed array is a LIST");
+    Jlp7Var *it = jlp7_list_at(v, 1);
+    ASSERT(it && it->type == JLP7_STRING && strcmp(it->val.s, "two") == 0, "list item 1");
+    it = jlp7_list_at(v, 2);
+    ASSERT(it && it->type == JLP7_ARRAY && it->arr_len == 2, "list item 2 is an ARRAY");
+    it = jlp7_list_at(v, 3);
+    Jlp7Var *k = jlp7_dict_get(it, "k");
+    ASSERT(it && it->type == JLP7_DICT && k && k->type == JLP7_BOOL && k->val.b == 0,
+           "list item 3 is a DICT");
+
+    v = jlp7_env_get(env, "cfg");
+    Jlp7Var *pos = jlp7_dict_get(v, "pos");
+    Jlp7Var *py  = jlp7_dict_get(pos, "y");
+    ASSERT(v && v->type == JLP7_DICT && v->arr_len == 3, "dict with 3 keys");
+    ASSERT(py && py->type == JLP7_INT && py->val.i == 2, "dict.pos.y == 2");
+
+    v = jlp7_env_get(env, "nan");  ASSERT(v && v->type == JLP7_FLOAT && isnan(v->val.f), "NaN");
+    v = jlp7_env_get(env, "inf");  ASSERT(v && isinf(v->val.f) && v->val.f > 0, "Infinity");
+    v = jlp7_env_get(env, "ninf"); ASSERT(v && isinf(v->val.f) && v->val.f < 0, "-Infinity");
+    v = jlp7_env_get(env, "cnan"); ASSERT(v && isnan(v->val.f), "printf-style -nan");
+    v = jlp7_env_get(env, "big");  ASSERT(v && v->type == JLP7_FLOAT, "integer too big for long long -> float");
+
+    /* Malformed input: error, and env is untouched */
+    size_t before = env->count;
+    rc = jlp7_java_parse_vars("{\"a\": 1, \"b\": [1, 2", env, why, sizeof(why));
+    ASSERT(rc == -1 && why[0], "truncated JSON is rejected with a reason");
+    ASSERT(env->count == before && jlp7_env_get(env, "a") == NULL,
+           "malformed JSON leaves env untouched");
+    rc = jlp7_java_parse_vars("{\"a\": @}", env, why, sizeof(why));
+    ASSERT(rc == -1, "bad token is rejected");
+
+    /* Depth limit: 200 nested arrays */
+    char deep[1024];
+    size_t n = 0;
+    n += (size_t)snprintf(deep + n, sizeof(deep) - n, "{\"d\": ");
+    for (int i = 0; i < 200; i++) deep[n++] = '[';
+    for (int i = 0; i < 200; i++) deep[n++] = ']';
+    n += (size_t)snprintf(deep + n, sizeof(deep) - n, "}");
+    rc = jlp7_java_parse_vars(deep, env, why, sizeof(why));
+    ASSERT(rc == -1 && strstr(why, "deep"), "nesting deeper than 64 is rejected");
+
+    jlp7_env_free(env);
+}
+
+static void test_value_api(void) {
+    printf("\n── Nested: value API and deep copy ──\n");
+    Jlp7Env *env = jlp7_env_new();
+    Jlp7Var *cfg = jlp7_env_slot(env, "cfg");
+    jlp7_var_set_dict(cfg);
+    jlp7_var_set_str(jlp7_dict_put(cfg, "name"), "jlp7");
+    Jlp7Var *tags = jlp7_dict_put(cfg, "tags");
+    jlp7_var_set_list(tags);
+    for (int i = 0; i < 100; i++) jlp7_var_set_int(jlp7_list_push(tags), i);
+    ASSERT(tags->arr_len == 100, "100 pushes");
+    Jlp7Var *last = jlp7_list_at(tags, 99);
+    ASSERT(last && last->val.i == 99, "list_at(99)");
+
+    Jlp7Env *copy = jlp7_env_clone(env);
+    jlp7_var_set_str(jlp7_dict_put(jlp7_env_get(env, "cfg"), "name"), "changed");
+    Jlp7Var *cname = jlp7_dict_get(jlp7_env_get(copy, "cfg"), "name");
+    ASSERT(cname && strcmp(cname->val.s, "jlp7") == 0, "clone is independent (deep)");
+    Jlp7Var *ctags = jlp7_dict_get(jlp7_env_get(copy, "cfg"), "tags");
+    ASSERT(ctags && ctags->arr_len == 100 && jlp7_list_at(ctags, 42)->val.i == 42,
+           "clone keeps the whole list");
+
+    /* Overwriting with a scalar frees the tree (checked by ASan) */
+    jlp7_env_set_int(env, "cfg", 1);
+    ASSERT(jlp7_env_get(env, "cfg")->type == JLP7_INT, "container replaced by int");
+
+    /* put on an existing key resets it */
+    Jlp7Var *c2 = jlp7_env_slot(copy, "cfg");
+    ASSERT(c2->type == JLP7_NULL, "env_slot clears old content");
+
+    jlp7_env_free(copy);
+    jlp7_env_free(env);
+}
+
+static void test_python_nested(void) {
+    printf("\n── Nested: Python blocks ──\n");
+    Jlp7Env  *env = jlp7_env_new();
+    Jlp7Error err;
+    memset(&err, 0, sizeof(err));
+
+    /* Build a nested value in C, mutate it in Python. */
+    Jlp7Var *cfg = jlp7_env_slot(env, "cfg");
+    jlp7_var_set_dict(cfg);
+    jlp7_var_set_str(jlp7_dict_put(cfg, "name"), "run1");
+    Jlp7Var *layers = jlp7_dict_put(cfg, "layers");
+    jlp7_var_set_list(layers);
+    for (int i = 0; i < 3; i++) {
+        Jlp7Var *l = jlp7_list_push(layers);
+        jlp7_var_set_dict(l);
+        jlp7_var_set_int(jlp7_dict_put(l, "units"), 8 << i);
+    }
+    Jlp7Var *none = jlp7_dict_put(cfg, "note");
+    jlp7_var_set_null(none);
+
+    int rc = jlp7_run_python_ex(
+        "cfg['name'] = cfg['name'].upper()\n"
+        "cfg['layers'].append({'units': 64})\n"
+        "cfg['total'] = sum(l['units'] for l in cfg['layers'])\n"
+        "cfg['note'] = 'was None: %s' % (cfg['note'] is None)\n"
+        "lr = [0.1, 0.01]\n"
+        "hist = [{'epoch': i, 'loss': 1.0 / (i + 1), 'tags': ['a', 'b']} for i in range(3)]\n"
+        "empty = []\n"
+        "tup = ('x', 1, None)\n"
+        "matrix = [[1, 2], [3, 4]]\n",
+        env, 1, 1, &err);
+    ASSERT(rc == 0, "python ran on a nested env");
+    if (rc != 0) fprintf(stderr, "%s\n", err.message);
+
+    cfg = jlp7_env_get(env, "cfg");
+    ASSERT(strcmp(jlp7_dict_get(cfg, "name")->val.s, "RUN1") == 0, "dict value updated");
+    Jlp7Var *ly = jlp7_dict_get(cfg, "layers");
+    ASSERT(ly && ly->arr_len == 4 && jlp7_dict_get(jlp7_list_at(ly, 3), "units")->val.i == 64,
+           "list item appended in Python");
+    ASSERT(jlp7_dict_get(cfg, "total")->val.i == 8 + 16 + 32 + 64, "total computed");
+    ASSERT(strcmp(jlp7_dict_get(cfg, "note")->val.s, "was None: True") == 0,
+           "None arrived as None, came back as str");
+
+    Jlp7Var *lr = jlp7_env_get(env, "lr");
+    ASSERT(lr && lr->type == JLP7_ARRAY && lr->arr_len == 2, "numeric list -> ARRAY (unchanged)");
+    Jlp7Var *h = jlp7_env_get(env, "hist");
+    ASSERT(h && h->type == JLP7_LIST && h->arr_len == 3, "list of dicts -> LIST");
+    Jlp7Var *h2 = jlp7_list_at(h, 2);
+    ASSERT(jlp7_dict_get(h2, "epoch")->val.i == 2, "hist[2].epoch");
+    ASSERT(jlp7_dict_get(h2, "tags")->type == JLP7_LIST &&
+           jlp7_dict_get(h2, "tags")->arr_len == 2, "hist[2].tags is a LIST of str");
+    Jlp7Var *e = jlp7_env_get(env, "empty");
+    ASSERT(e && e->arr_len == 0, "empty list is exported");
+    Jlp7Var *t = jlp7_env_get(env, "tup");
+    ASSERT(t && t->type == JLP7_LIST && t->arr_len == 3 &&
+           jlp7_list_at(t, 2)->type == JLP7_NULL, "tuple with None -> LIST");
+    Jlp7Var *m = jlp7_env_get(env, "matrix");
+    ASSERT(m && m->type == JLP7_ARRAY && m->arr_len == 4,
+           "numeric 2D list still flattens to a flat ARRAY");
+
+    /* Things that cannot be represented */
+    rc = jlp7_run_python_ex("a = []\na.append(a)\nok = 1\n", env, 1, 0, &err);
+    ASSERT(rc == 0 && jlp7_env_get(env, "a") == NULL && jlp7_env_get(env, "ok"),
+           "self-containing list: skipped, no crash");
+    rc = jlp7_run_python_ex("a = []\na.append(a)\n", env, 1, 1, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_MARSHAL, "self-containing list: strict error");
+    jlp7_error_clear(&err);
+    rc = jlp7_run_python_ex("x = 'leaf'\nfor _ in range(100): x = [x]\n", env, 1, 1, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_MARSHAL, "100-deep nesting: strict error");
+    jlp7_error_clear(&err);
+    rc = jlp7_run_python_ex("d = {1: 'a'}\n", env, 1, 1, &err);
+    ASSERT(rc == -1 && err.message && strstr(err.message, "non-string key"),
+           "dict with int key: strict error");
+    jlp7_error_clear(&err);
+    rc = jlp7_run_python_ex("d = {'ok': 1, 'bad': {1, 2}}\ne = 5\n", env, 1, 0, &err);
+    ASSERT(rc == 0 && jlp7_env_get(env, "d") == NULL && jlp7_env_get(env, "e"),
+           "container holding a set: exported whole or not at all");
+    rc = jlp7_run_python_ex("d = {'big': 2**70}\n", env, 1, 0, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_MARSHAL, "int overflow inside a dict is an error");
     jlp7_error_clear(&err);
 
     jlp7_env_free(env);
@@ -496,6 +694,9 @@ int main(void) {
     test_error_struct();
     test_transactional_env();
     test_marshal_errors();
+    test_json_nested();
+    test_value_api();
+    test_python_nested();
     test_allowpy_false();
     test_java_basic();
     test_java_strings();

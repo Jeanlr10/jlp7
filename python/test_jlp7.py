@@ -256,9 +256,9 @@ def test_strict_marshal():
     if not has_gcc():
         print("  ⚠ gcc not found — skipping")
         return
-    src = "long long x = 1;\n/p\nd = {'a': 1}\np/\n"
+    src = "long long x = 1;\n/p\nd = {1, 2}\np/\n"
     env = JLP7("c").run(src)
-    assert_true("d" not in env, "non-strict leaves dict in Python")
+    assert_true("d" not in env, "non-strict leaves set in Python")
     try:
         JLP7("c", strict=True).run(src)
         fail("expected JLP7Error")

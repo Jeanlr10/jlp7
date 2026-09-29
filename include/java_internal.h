@@ -16,7 +16,10 @@ typedef struct {
 } Jlp7VarDecl;
 
 /* java_json.c */
-void jlp7_java_parse_vars(const char *json, Jlp7Env *env);
+/* Returns 0, or -1 if the JSON is malformed (env is then untouched and a
+ * short reason is copied to why). */
+int  jlp7_java_parse_vars(const char *json, Jlp7Env *env,
+                          char *why, size_t why_len);
 
 /* java_builder.c */
 Jlp7VarDecl *jlp7_java_scan_decls(const char *code, int *count);
