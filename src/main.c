@@ -571,6 +571,106 @@ static void test_java_multi_block(void) {
     jlp7_env_free(env);
 }
 
+static void test_java_nested(void) {
+    printf("\n── Java: nested values, both directions ──\n");
+    if (!has_jshell()) { printf("  ⚠ jshell not found — skipping\n"); return; }
+
+    Jlp7Config cfg = jlp7_default_config("java");
+    Jlp7Env   *env = jlp7_env_new();
+    Jlp7Error  err;
+
+    /* Python builds nested data; Java reads and changes it. */
+    int rc = jlp7_exec_ex(
+        "/p\n"
+        "cfg = {'name': 'a\"b', 'layers': [{'units': 8}, {'units': 16}],\n"
+        "       'opt': None, 'msg': 'h\\u00e9llo \\U0001F600\\n'}\n"
+        "lr = [0.1, 0.01]\n"
+        "small = 5\n"
+        "big = 3000000000\n"
+        "flag = True\n"
+        "p/\n"
+        "List<Object> layers = (List<Object>) cfg.get(\"layers\");\n"
+        "long total = 0;\n"
+        "for (Object o : layers) { total += (Long) ((Map<String, Object>) o).get(\"units\"); }\n"
+        "cfg.put(\"total\", total);\n"
+        "boolean optWasNull = cfg.get(\"opt\") == null;\n"
+        "lr[0] = lr[0] * 2;\n"
+        "int twice = small * 2;\n"
+        "long bigger = big + 1;\n",
+        &cfg, env, &err);
+    ASSERT(rc == 0, "python -> java -> env succeeded");
+    if (rc != 0) { fprintf(stderr, "%s\n", err.message ? err.message : "?"); jlp7_error_clear(&err); }
+
+    Jlp7Var *c = jlp7_env_get(env, "cfg");
+    ASSERT(c && c->type == JLP7_DICT, "cfg is still a DICT");
+    Jlp7Var *nm = jlp7_dict_get(c, "name");
+    ASSERT(nm && strcmp(nm->val.s, "a\"b") == 0, "string with a quote survives");
+    Jlp7Var *msg = jlp7_dict_get(c, "msg");
+    ASSERT(msg && strcmp(msg->val.s, "h\xc3\xa9llo \xf0\x9f\x98\x80\n") == 0,
+           "non-ASCII, emoji and newline survive");
+    Jlp7Var *tot = jlp7_dict_get(c, "total");
+    ASSERT(tot && tot->type == JLP7_INT && tot->val.i == 24, "Java added cfg.total = 24");
+    Jlp7Var *opt = jlp7_dict_get(c, "opt");
+    ASSERT(opt && opt->type == JLP7_NULL, "null stays null");
+    Jlp7Var *lay = jlp7_dict_get(c, "layers");
+    ASSERT(lay && lay->type == JLP7_LIST && lay->arr_len == 2, "layers still a LIST of 2");
+    Jlp7Var *lr = jlp7_env_get(env, "lr");
+    ASSERT(lr && lr->type == JLP7_ARRAY && lr->val.arr[0] == 0.2, "double[] modified in Java");
+    Jlp7Var *v = jlp7_env_get(env, "optWasNull");
+    ASSERT(v && v->type == JLP7_BOOL && v->val.b == 1, "Java saw None as null");
+    v = jlp7_env_get(env, "twice");
+    ASSERT(v && v->val.i == 10, "small int arrives as int: 'int twice = small * 2' compiles");
+    v = jlp7_env_get(env, "bigger");
+    ASSERT(v && v->val.i == 3000000001LL, "large int arrives as long");
+
+    jlp7_env_free(env);
+}
+
+static void test_java_export_types(void) {
+    printf("\n── Java: List / Map / array / NaN declared in Java ──\n");
+    if (!has_jshell()) { printf("  ⚠ jshell not found — skipping\n"); return; }
+
+    Jlp7Config cfg = jlp7_default_config("java");
+    Jlp7Env   *env = jlp7_env_new();
+
+    int rc = jlp7_exec(
+        "Map<String, Object> m = new LinkedHashMap<>();\n"
+        "m.put(\"k\", 1);\n"
+        "m.put(\"s\", \"x\\\"y\");\n"
+        "m.put(\"nums\", List.of(1, 2, 3));\n"
+        "List<String> names = new ArrayList<>(List.of(\"a\", \"b\"));\n"
+        "int[] nums = {4, 5, 6};\n"
+        "double d = Double.NaN;\n"
+        "String q = \"line1\\nline2 \\\"quoted\\\" \\\\ \\u00e9\";\n"
+        "/p\n"
+        "count = len(names) + len(m)\n"
+        "p/\n",
+        &cfg, env);
+    ASSERT(rc == 0, "exec returned 0");
+
+    Jlp7Var *m = jlp7_env_get(env, "m");
+    ASSERT(m && m->type == JLP7_DICT && m->arr_len == 3, "Map -> DICT");
+    ASSERT(jlp7_dict_get(m, "k")->val.i == 1, "m.k == 1");
+    ASSERT(strcmp(jlp7_dict_get(m, "s")->val.s, "x\"y") == 0, "m.s has its quote");
+    ASSERT(jlp7_dict_get(m, "nums")->type == JLP7_ARRAY &&
+           jlp7_dict_get(m, "nums")->arr_len == 3, "List<Integer> inside a Map -> ARRAY");
+    Jlp7Var *names = jlp7_env_get(env, "names");
+    ASSERT(names && names->type == JLP7_LIST && names->arr_len == 2 &&
+           strcmp(jlp7_list_at(names, 1)->val.s, "b") == 0, "List<String> -> LIST");
+    Jlp7Var *nums = jlp7_env_get(env, "nums");
+    ASSERT(nums && nums->type == JLP7_ARRAY && nums->arr_len == 3 && nums->val.arr[2] == 6,
+           "int[] -> ARRAY");
+    Jlp7Var *d = jlp7_env_get(env, "d");
+    ASSERT(d && d->type == JLP7_FLOAT && isnan(d->val.f), "NaN survives");
+    Jlp7Var *q = jlp7_env_get(env, "q");
+    ASSERT(q && strcmp(q->val.s, "line1\nline2 \"quoted\" \\ \xc3\xa9") == 0,
+           "quotes, newline, backslash, e-acute in a String");
+    Jlp7Var *cnt = jlp7_env_get(env, "count");
+    ASSERT(cnt && cnt->val.i == 5, "python saw the Java collections (2 + 3)");
+
+    jlp7_env_free(env);
+}
+
 /* ── C integration (requires gcc) ───────────────────────────────────── */
 
 static int has_gcc(void) {
@@ -676,6 +776,198 @@ static void test_c_compile_error(void) {
     jlp7_env_free(env);
 }
 
+/* ── C: exported structs ─────────────────────────────────────────────── */
+
+static void test_c_struct_export(void) {
+    printf("\n── C: // jlp7:export structs, C -> env ──\n");
+    if (!has_gcc()) { printf("  ⚠ gcc not found — skipping\n"); return; }
+
+    Jlp7Config cfg = jlp7_default_config("c");
+    Jlp7Env   *env = jlp7_env_new();
+    Jlp7Error  err;
+
+    int rc = jlp7_exec_ex(
+        "// jlp7:export\n"
+        "struct Point { double x, y; };\n"
+        "// jlp7:export\n"
+        "typedef struct {\n"
+        "    char   name[16];   // a string\n"
+        "    int    id;\n"
+        "    bool   alive;\n"
+        "    struct Point pos;\n"
+        "    double hist[3];\n"
+        "    struct Point trail[2];\n"
+        "} Entity;\n"
+        "\n"
+        "struct Point p = {1.5, 2.5};\n"
+        "Entity e = { \"b\\\"o\\\"b\", 7, true, {3, 4}, {1, 2, 3}, {{5, 6}, {7, 8}} };\n"
+        "Entity es[2] = { {\"a\", 1, false, {0, 0}, {0, 0, 0}, {{0, 0}, {0, 0}}},\n"
+        "                 {\"b\", 2, true,  {1, 1}, {9, 9, 9}, {{0, 0}, {0, 0}}} };\n"
+        "char label[] = \"say \\\"hi\\\"\\n\";\n"
+        "double nan_val = 0.0 / 0.0;\n"
+        "/p\n"
+        "total = p['x'] + p['y'] + e['pos']['x'] + e['hist'][2]\n"
+        "ename = e['name']\n"
+        "second = es[1]['name']\n"
+        "p/\n",
+        &cfg, env, &err);
+    ASSERT(rc == 0, "exec with exported structs succeeded");
+    if (rc != 0) { fprintf(stderr, "%s\n", err.message ? err.message : "?"); jlp7_error_clear(&err); }
+
+    Jlp7Var *p = jlp7_env_get(env, "p");
+    ASSERT(p && p->type == JLP7_DICT && p->arr_len == 2, "struct -> DICT");
+    ASSERT(p && jlp7_dict_get(p, "x")->val.f == 1.5, "p.x == 1.5");
+
+    Jlp7Var *e = jlp7_env_get(env, "e");
+    ASSERT(e && e->type == JLP7_DICT && e->arr_len == 6, "Entity has 6 fields");
+    ASSERT(strcmp(jlp7_dict_get(e, "name")->val.s, "b\"o\"b") == 0,
+           "char[16] -> string, quotes escaped");
+    ASSERT(jlp7_dict_get(e, "id")->val.i == 7, "int field");
+    ASSERT(jlp7_dict_get(e, "alive")->type == JLP7_BOOL && jlp7_dict_get(e, "alive")->val.b == 1,
+           "bool field");
+    ASSERT(jlp7_dict_get(jlp7_dict_get(e, "pos"), "y")->val.f == 4, "nested struct");
+    Jlp7Var *hist = jlp7_dict_get(e, "hist");
+    ASSERT(hist && hist->type == JLP7_ARRAY && hist->arr_len == 3 && hist->val.arr[2] == 3,
+           "double[3] field -> ARRAY");
+    Jlp7Var *trail = jlp7_dict_get(e, "trail");
+    ASSERT(trail && trail->type == JLP7_LIST && trail->arr_len == 2 &&
+           jlp7_dict_get(jlp7_list_at(trail, 1), "y")->val.f == 8,
+           "struct[2] field -> LIST of DICT");
+
+    Jlp7Var *es = jlp7_env_get(env, "es");
+    ASSERT(es && es->type == JLP7_LIST && es->arr_len == 2, "Entity es[2] -> LIST of 2");
+    ASSERT(strcmp(jlp7_dict_get(jlp7_list_at(es, 1), "name")->val.s, "b") == 0,
+           "es[1].name == b");
+
+    Jlp7Var *lab = jlp7_env_get(env, "label");
+    ASSERT(lab && lab->type == JLP7_STRING && strcmp(lab->val.s, "say \"hi\"\n") == 0,
+           "user-declared char[] is a string (quotes and newline escaped)");
+    Jlp7Var *nv = jlp7_env_get(env, "nan_val");
+    ASSERT(nv && nv->type == JLP7_FLOAT && isnan(nv->val.f), "NaN from C");
+
+    Jlp7Var *tot = jlp7_env_get(env, "total");
+    ASSERT(tot && tot->val.f == 1.5 + 2.5 + 3 + 3, "Python read the C structs");
+    Jlp7Var *en = jlp7_env_get(env, "ename");
+    ASSERT(en && strcmp(en->val.s, "b\"o\"b") == 0, "Python read e['name']");
+
+    jlp7_env_free(env);
+}
+
+static void test_c_struct_import(void) {
+    printf("\n── C: // jlp7:export structs, env -> C ──\n");
+    if (!has_gcc()) { printf("  ⚠ gcc not found — skipping\n"); return; }
+
+    Jlp7Config cfg = jlp7_default_config("c");
+    Jlp7Env   *env = jlp7_env_new();
+    Jlp7Error  err;
+
+    /* Python makes dicts; the C block declares structs with no initialiser
+     * and finds them filled in. */
+    int rc = jlp7_exec_ex(
+        "/p\n"
+        "e = {'name': 'bob', 'id': 7, 'alive': True, 'pos': {'x': 1, 'y': 2},\n"
+        "     'hist': [1, 2, 3], 'trail': [{'x': 0, 'y': 1}, {'x': 2, 'y': 3}],\n"
+        "     'extra': 'ignored'}\n"
+        "es = [{'id': 10}, {'id': 20, 'name': 'zed'}]\n"
+        "p/\n"
+        "// jlp7:export\n"
+        "struct Point { double x, y; };\n"
+        "// jlp7:export\n"
+        "typedef struct {\n"
+        "    char name[16]; int id; bool alive;\n"
+        "    struct Point pos; double hist[3]; struct Point trail[2];\n"
+        "} Entity;\n"
+        "Entity e;\n"
+        "Entity es[2];\n"
+        "Entity fresh;\n"
+        "int seen = e.id + es[0].id + es[1].id;\n"
+        "e.id += 1;\n"
+        "e.pos.x = 9;\n"
+        "e.hist[2] = 30;\n"
+        "e.trail[1].y = 99;\n"
+        "strcpy(e.name, \"alice\");\n"
+        "es[1].alive = true;\n"
+        "fresh.id = -5;\n",
+        &cfg, env, &err);
+    ASSERT(rc == 0, "exec succeeded");
+    if (rc != 0) { fprintf(stderr, "%s\n", err.message ? err.message : "?"); jlp7_error_clear(&err); }
+
+    Jlp7Var *seen = jlp7_env_get(env, "seen");
+    ASSERT(seen && seen->val.i == 7 + 10 + 20, "C saw the fields Python set");
+
+    Jlp7Var *e = jlp7_env_get(env, "e");
+    ASSERT(e && jlp7_dict_get(e, "id")->val.i == 8, "C changed e.id");
+    ASSERT(strcmp(jlp7_dict_get(e, "name")->val.s, "alice") == 0, "C changed e.name");
+    ASSERT(jlp7_dict_get(jlp7_dict_get(e, "pos"), "x")->val.f == 9, "C changed e.pos.x");
+    ASSERT(jlp7_dict_get(jlp7_dict_get(e, "pos"), "y")->val.f == 2, "e.pos.y kept");
+    ASSERT(jlp7_dict_get(e, "hist")->val.arr[2] == 30 &&
+           jlp7_dict_get(e, "hist")->val.arr[0] == 1, "C changed e.hist[2], kept hist[0]");
+    ASSERT(jlp7_dict_get(jlp7_list_at(jlp7_dict_get(e, "trail"), 1), "y")->val.f == 99 &&
+           jlp7_dict_get(jlp7_list_at(jlp7_dict_get(e, "trail"), 0), "y")->val.f == 1,
+           "C changed e.trail[1].y, kept trail[0].y");
+    ASSERT(jlp7_dict_get(e, "extra") == NULL,
+           "keys that are not fields are not carried (the C struct is the truth)");
+
+    Jlp7Var *es = jlp7_env_get(env, "es");
+    ASSERT(es && jlp7_dict_get(jlp7_list_at(es, 1), "alive")->val.b == 1 &&
+           strcmp(jlp7_dict_get(jlp7_list_at(es, 1), "name")->val.s, "zed") == 0,
+           "struct array filled from a LIST, changed in C");
+
+    Jlp7Var *fresh = jlp7_env_get(env, "fresh");
+    ASSERT(fresh && jlp7_dict_get(fresh, "id")->val.i == -5,
+           "no env dict: declared struct is just exported");
+
+    /* An initialiser wins over the env, like a redeclared int does. */
+    jlp7_env_free(env);
+    env = jlp7_env_new();
+    rc = jlp7_exec(
+        "/p\nq = {'x': 100, 'y': 200}\np/\n"
+        "// jlp7:export\nstruct Point { double x, y; };\n"
+        "struct Point q = {1, 2};\n",
+        &cfg, env);
+    Jlp7Var *q = jlp7_env_get(env, "q");
+    ASSERT(rc == 0 && q && jlp7_dict_get(q, "x")->val.f == 1, "initialiser beats the env dict");
+
+    jlp7_env_free(env);
+}
+
+static void test_c_struct_passthrough_and_errors(void) {
+    printf("\n── C: DICT/LIST pass-through and struct errors ──\n");
+    if (!has_gcc()) { printf("  ⚠ gcc not found — skipping\n"); return; }
+
+    Jlp7Config cfg = jlp7_default_config("c");
+    Jlp7Env   *env = jlp7_env_new();
+
+    /* A C block with no struct: dict and list in the env come out unchanged. */
+    int rc = jlp7_exec(
+        "/p\ncfg = {'a': [1, 'two'], 'b': None}\nnames = ['x', 'y']\np/\n"
+        "long long n = 5;\n",
+        &cfg, env);
+    ASSERT(rc == 0, "block without structs ran");
+    Jlp7Var *cfgv = jlp7_env_get(env, "cfg");
+    ASSERT(cfgv && cfgv->type == JLP7_DICT && jlp7_dict_get(cfgv, "b")->type == JLP7_NULL,
+           "DICT passed through the C block untouched");
+    Jlp7Var *names = jlp7_env_get(env, "names");
+    ASSERT(names && names->type == JLP7_LIST && names->arr_len == 2,
+           "LIST passed through the C block untouched");
+
+    /* Unsupported field: clear error, env rolled back */
+    size_t before = env->count;
+    rc = jlp7_exec("// jlp7:export\nstruct Bad { char *name; };\nlong long z = 1;\n", &cfg, env);
+    ASSERT(rc == -1 && env->count == before, "pointer field: error, env unchanged");
+
+    rc = jlp7_exec("// jlp7:export\nint not_a_struct = 1;\n", &cfg, env);
+    ASSERT(rc == -1, "marker not followed by a struct: error");
+
+    /* Plain structs without the marker behave as before (not exported) */
+    rc = jlp7_exec("struct Q { int a; };\nstruct Q q = {3};\nlong long w = q.a;\n", &cfg, env);
+    Jlp7Var *w = jlp7_env_get(env, "w");
+    ASSERT(rc == 0 && w && w->val.i == 3 && jlp7_env_get(env, "q") == NULL,
+           "unmarked struct is not exported");
+
+    jlp7_env_free(env);
+}
+
 /* ── main ───────────────────────────────────────────────────────────── */
 
 int main(void) {
@@ -701,10 +993,15 @@ int main(void) {
     test_java_basic();
     test_java_strings();
     test_java_multi_block();
+    test_java_nested();
+    test_java_export_types();
     test_c_basic();
     test_c_strings();
     test_c_multi_block();
     test_c_compile_error();
+    test_c_struct_export();
+    test_c_struct_import();
+    test_c_struct_passthrough_and_errors();
 
     printf("\n══════════════════════════════════════════════════════════════════════════════\n");
     printf("  Passed: %d  |  Failed: %d\n", passed, failed);

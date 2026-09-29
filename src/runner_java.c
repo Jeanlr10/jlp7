@@ -52,9 +52,16 @@ int jlp7_run_java(const char *code, Jlp7Env *env) {
     fclose(f);
     free(full_src);
 
-    /* 4. Build error capture path */
-    char errpath[80];
-    snprintf(errpath, sizeof(errpath), "/tmp/jlp7_err_%d.txt", (int)getpid());
+    /* 4. Private error-capture file (unique per call: threads may run
+     * Java blocks at the same time, so a pid-based name would collide). */
+    char errpath[] = "/tmp/jlp7_err_XXXXXX";
+    int  errfd     = mkstemp(errpath);
+    if (errfd < 0) {
+        fprintf(stderr, "[jlp7:java] failed to create temp error file\n");
+        remove(jshpath);
+        return -1;
+    }
+    close(errfd);
 
     /* 5. Run JShell */
     char cmd[256];
@@ -116,7 +123,12 @@ int jlp7_run_java(const char *code, Jlp7Env *env) {
     }
 
     /* 9. Parse vars back into env */
-    if (vars_json && vars_json[0]) {
+    if (!vars_json) {
+        fprintf(stderr, "[jlp7:java] block produced no variable data "
+                        "(see the errors above)\n");
+        return -1;
+    }
+    if (vars_json[0]) {
         char why[96];
         if (jlp7_java_parse_vars(vars_json, env, why, sizeof(why)) != 0) {
             fprintf(stderr, "[jlp7:java] could not read variables back: %s\n", why);

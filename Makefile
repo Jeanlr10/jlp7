@@ -42,7 +42,7 @@ test: $(TEST)
 	./$(TEST)
 
 test-threads: $(THREADT)
-	./$(THREADT) --with-c
+	./$(THREADT) --with-c --with-java
 
 -include $(DEPS)
 

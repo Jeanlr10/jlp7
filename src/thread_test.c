@@ -20,6 +20,7 @@
 
 static pthread_barrier_t start_line;
 static int with_c;
+static int with_java;
 
 typedef struct {
     int       id;
@@ -78,6 +79,19 @@ static void *worker(void *arg) {
             goto out;
         }
     }
+    if (with_java && r->id < 4) {
+        /* jshell in several threads at once: each must get its own
+         * result, so temp files must not be shared. */
+        Jlp7Config jcfg = jlp7_default_config("java");
+        int rc = jlp7_exec("int mine = 0;\n/p\nmine = id * 100\np/\n"
+                           "int twice = mine * 2;\n", &jcfg, env);
+        Jlp7Var *v = jlp7_env_get(env, "twice");
+        if (rc != 0 || !v || v->val.i != r->id * 200) {
+            snprintf(r->why, sizeof(r->why), "java block: rc=%d twice=%lld",
+                     rc, v ? v->val.i : -1);
+            goto out;
+        }
+    }
     r->ok = 1;
 out:
     jlp7_env_free(env);
@@ -85,7 +99,10 @@ out:
 }
 
 int main(int argc, char **argv) {
-    with_c = (argc > 1 && strcmp(argv[1], "--with-c") == 0);
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--with-c") == 0)    with_c = 1;
+        if (strcmp(argv[i], "--with-java") == 0) with_java = 1;
+    }
     pthread_t th[NTHREADS];
     Result    res[NTHREADS];
 
@@ -103,8 +120,8 @@ int main(int argc, char **argv) {
             bad++;
         }
     }
-    printf("%s: %d threads x %d blocks%s, %d failed\n",
+    printf("%s: %d threads x %d blocks%s%s, %d failed\n",
            bad ? "FAIL" : "PASS", NTHREADS, NITERS,
-           with_c ? " (+ C block)" : "", bad);
+           with_c ? " (+ C block)" : "", with_java ? " (+ Java in 4)" : "", bad);
     return bad ? 1 : 0;
 }
