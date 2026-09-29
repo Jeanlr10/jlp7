@@ -24,13 +24,16 @@
 #define MAX_LINE 4096
 
 int jlp7_run_c(const char *code, Jlp7Env *env) {
-    /* 1. Scan declarations */
-    int           ndecls = 0;
-    Jlp7CVarDecl *decls  = jlp7_c_scan_decls(code, &ndecls);
-
-    /* 2. Build full C source */
-    char *full_src = jlp7_c_build_source(code, env, decls, ndecls);
-    free(decls);
+    /* 1+2. Scan the block (declarations, exported structs) and build the
+     * full C source. */
+    Jlp7CScan sc;
+    if (jlp7_c_scan(code, &sc) != 0) {
+        fprintf(stderr, "[jlp7:c] %s\n", sc.error);
+        jlp7_c_scan_free(&sc);
+        return -1;
+    }
+    char *full_src = jlp7_c_build_source(&sc, env);
+    jlp7_c_scan_free(&sc);
 
     /* 3. Write source to secure temp file */
     char src_template[] = "/tmp/jlp7_c_XXXXXX";
@@ -151,8 +154,19 @@ int jlp7_run_c(const char *code, Jlp7Env *env) {
     }
 
     /* 8. Parse vars back into env */
-    if (vars_json && vars_json[0])
-        jlp7_c_parse_vars(vars_json, env);
+    if (!vars_json) {
+        fprintf(stderr, "[jlp7:c] program ended without printing its "
+                        "variables (did the code call exit()?)\n");
+        return -1;
+    }
+    if (vars_json[0]) {
+        char why[96];
+        if (jlp7_c_parse_vars(vars_json, env, why, sizeof(why)) != 0) {
+            fprintf(stderr, "[jlp7:c] could not read variables back: %s\n", why);
+            free(vars_json);
+            return -1;
+        }
+    }
     free(vars_json);
 
     return 0;

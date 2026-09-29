@@ -17,9 +17,19 @@
  * Everything inside  /p...p/ is a PYTHON  block.
  */
 
-static Jlp7Block *make_block(Jlp7BlockType type, const char *start, size_t len) {
+/* 1-based line number of `at` within `source`. */
+static int line_of(const char *source, const char *at) {
+    int line = 1;
+    for (const char *c = source; c < at; c++)
+        if (*c == '\n') line++;
+    return line;
+}
+
+static Jlp7Block *make_block(Jlp7BlockType type, const char *start, size_t len,
+                             int line) {
     Jlp7Block *b = malloc(sizeof(Jlp7Block));
     b->type      = type;
+    b->line      = line;
     b->code      = malloc(len + 1);
     memcpy(b->code, start, len);
     b->code[len] = '\0';
@@ -49,7 +59,8 @@ Jlp7Block *jlp7_parse(const char *source) {
             /* Flush any preceding foreign content */
             if (p > seg) {
                 list_append(&head, &tail,
-                            make_block(JLP7_BLOCK_FOREIGN, seg, p - seg));
+                            make_block(JLP7_BLOCK_FOREIGN, seg, p - seg,
+                                       line_of(source, seg)));
             }
 
             /* Skip "/p" and one optional newline */
@@ -65,7 +76,8 @@ Jlp7Block *jlp7_parse(const char *source) {
             }
 
             list_append(&head, &tail,
-                        make_block(JLP7_BLOCK_PYTHON, py_start, p - py_start));
+                        make_block(JLP7_BLOCK_PYTHON, py_start, p - py_start,
+                                   line_of(source, py_start)));
 
             if (*p) p += 2;   /* consume "p/" */
             if (*p == '\r') p++;
@@ -80,7 +92,8 @@ Jlp7Block *jlp7_parse(const char *source) {
     /* Flush any trailing foreign content */
     if (p > seg) {
         list_append(&head, &tail,
-                    make_block(JLP7_BLOCK_FOREIGN, seg, p - seg));
+                    make_block(JLP7_BLOCK_FOREIGN, seg, p - seg,
+                                       line_of(source, seg)));
     }
 
     return head;
