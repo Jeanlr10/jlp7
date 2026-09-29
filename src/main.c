@@ -467,6 +467,42 @@ static void test_python_nested(void) {
     jlp7_env_free(env);
 }
 
+static void test_python_dedent(void) {
+    printf("\n── Python runner: indented blocks ──\n");
+    Jlp7Env  *env = jlp7_env_new();
+    Jlp7Error err;
+    memset(&err, 0, sizeof(err));
+    jlp7_env_set_int(env, "x", 5);
+
+    int rc = jlp7_run_python_ex(
+        "    x = x * 2\n"
+        "    if x > 5:\n"
+        "        label = 'big'\n"
+        "\n"
+        "    y = x + 1\n", env, 1, 0, &err);
+    ASSERT(rc == 0, "block indented by 4 runs");
+    Jlp7Var *v = jlp7_env_get(env, "y");
+    ASSERT(v && v->val.i == 11, "code ran correctly after dedent");
+    ASSERT(jlp7_env_get(env, "label") != NULL, "nested indentation kept");
+
+    /* line numbers still refer to the original source */
+    Jlp7Config cfg = jlp7_default_config("c");
+    rc = jlp7_exec_ex("long long a = 1;\n"
+                      "\t/p\n"
+                      "\t\ta = 2\n"
+                      "\t\tb = 1 / 0\n"
+                      "\tp/\n", &cfg, env, &err);
+    ASSERT(rc == -1 && err.line == 4, "error line is still 4 after dedent");
+    jlp7_error_clear(&err);
+
+    /* less-indented later line: nothing to remove, normal behaviour */
+    rc = jlp7_run_python_ex("a = 1\n    b = 2\n", env, 1, 0, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_PY_COMPILE, "real indentation errors still reported");
+    jlp7_error_clear(&err);
+
+    jlp7_env_free(env);
+}
+
 /* ── allowpy guard ──────────────────────────────────────────────────── */
 
 static void test_allowpy_false(void) {
@@ -989,6 +1025,7 @@ int main(void) {
     test_json_nested();
     test_value_api();
     test_python_nested();
+    test_python_dedent();
     test_allowpy_false();
     test_java_basic();
     test_java_strings();

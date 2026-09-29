@@ -71,7 +71,7 @@ setup(
     license          = "Apache-2.0",
     packages         = find_packages(),
     package_data     = {"jlp7": ["libjlp7.so"]},
-    python_requires  = ">=3.10",
+    python_requires  = ">=3.12",
     cmdclass         = {
         "build_py": BuildWithNative,
         "develop":  DevelopWithNative,

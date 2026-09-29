@@ -124,12 +124,90 @@ make test-threads   # 16 threads, mixed pass/fail blocks, plus C blocks
 
 ## Supported Types
 
-| C / Java       | Python  |
-|----------------|---------|
-| `long long`    | `int`   |
-| `double`       | `float` |
-| `int` (0/1)    | `bool`  |
-| `char[]`       | `str`   |
+| C / Java                        | Python              | Env type       |
+|---------------------------------|---------------------|----------------|
+| `long long`, `int`, `long`      | `int`               | `JLP7_INT`     |
+| `double`, `float`               | `float`             | `JLP7_FLOAT`   |
+| `int` (0/1), `boolean`, `bool`  | `bool`              | `JLP7_BOOL`    |
+| `char[]`, `String`              | `str`               | `JLP7_STRING`  |
+| `double[N]`, `int[]`, ...       | `list` of numbers   | `JLP7_ARRAY`   |
+| `List<...>`, mixed arrays       | `list` / `tuple`    | `JLP7_LIST`    |
+| `Map<String, ...>`, C structs   | `dict` (str keys)   | `JLP7_DICT`    |
+| `null`                          | `None`              | `JLP7_NULL`    |
+
+## Structured data
+
+Lists and dicts nest to any depth (64 levels; a value that contains
+itself is rejected).
+
+```python
+env = JLP7('java').run('''
+    /p
+    cfg = {'name': 'run1', 'layers': [{'units': 8}, {'units': 16}], 'opt': None}
+    p/
+    List<Object> layers = (List<Object>) cfg.get("layers");
+    cfg.put("depth", layers.size());
+''')
+env['cfg']['depth']   # 2
+```
+
+**Numeric lists are arrays.** A list, tuple or `ndarray` whose leaves are
+all numbers becomes one flat `JLP7_ARRAY` of doubles, as before; nesting
+is flattened row-major, so a 2x2 matrix arrives as 4 numbers. Any other
+list (a `str`, `None`, a dict, ... among the items) is a `JLP7_LIST`
+and keeps its shape.
+
+**What Java sees.** Env lists and dicts appear as `List<Object>` and
+`Map<String, Object>`; integers inside them are `Long`, floats `Double`,
+numeric lists `double[]`. Declare `List<...>`, `Map<...>`, `ArrayList`,
+`HashMap`, `LinkedHashMap`, `TreeMap` or an array such as `int[]` in a
+block and it goes back to the env.
+
+**Integer size in Java.** An env integer is declared `int` if it fits in
+32 bits, `long` otherwise. So `int doubled = counter * 2;` compiles for a
+small counter. The price: `int` arithmetic can overflow where Python's
+would not, and a `long` value cannot be assigned to such a variable
+without a cast.
+
+**What C sees: `// jlp7:export`.** C has no run-time type information, so
+a struct is exported only when you mark its definition:
+
+```c
+// jlp7:export
+struct Point { double x, y; };
+
+// jlp7:export
+typedef struct {
+    char   name[16];       // string
+    int    id;
+    bool   alive;
+    struct Point pos;      // nested struct   -> nested dict
+    double hist[3];        // number array    -> list of numbers
+    struct Point trail[2]; // struct array    -> list of dicts
+} Entity;
+
+struct Point p = {1.5, 2.5};   // exported as {'x': 1.5, 'y': 2.5}
+Entity e;                      // no initialiser: filled from the env
+                               // dict "e", if Python made one
+```
+
+- Variables of a marked type are exported as dicts; arrays of them as
+  lists of dicts.
+- A struct declared **without** an initialiser is filled from the env
+  dict of the same name. With an initialiser, your value wins (the same
+  rule as for a redeclared `int`).
+- The C struct is the source of truth: dict keys that are not fields are
+  dropped, missing keys leave the field alone.
+- Pointers, multi-dimensional arrays, nested struct bodies and unions are
+  not supported; a marked struct that uses them is an error.
+- Env lists and dicts with no struct variable in the block pass through
+  a C block untouched.
+
+## Notes on the wire format
+
+C and Java blocks print one `__VARS__:{...}` JSON line, which the library
+reads back. `NaN`, `Infinity` and printf's `nan`/`inf` are accepted.
+A block that prints no such line, or one that is malformed, is an error.
 
 ## License
 

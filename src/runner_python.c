@@ -460,6 +460,52 @@ static int export_locals(PyObject *d, Jlp7Env *out, int strict, Jlp7Error *err) 
 
 /* ── Runner ─────────────────────────────────────────────────────────── */
 
+/* Remove the leading whitespace that every non-blank line shares, like
+ * textwrap.dedent. A /p block written inside an indented string (a
+ * Python triple-quoted source, an indented C string) is otherwise an
+ * IndentationError. The number of lines does not change, so line
+ * numbers in errors stay right. Caller frees. */
+static char *dedent(const char *code) {
+    size_t n = strlen(code);
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+
+    /* 1. common prefix of the leading whitespace of non-blank lines */
+    const char *prefix = NULL;
+    size_t      plen   = 0;
+    for (const char *line = code; *line; ) {
+        const char *eol = strchr(line, '\n');
+        size_t len = eol ? (size_t)(eol - line) : strlen(line);
+        size_t ws = 0;
+        while (ws < len && (line[ws] == ' ' || line[ws] == '\t')) ws++;
+        int blank = (ws == len) || (ws + 1 == len && line[ws] == '\r');
+        if (!blank) {
+            if (!prefix) { prefix = line; plen = ws; }
+            else {
+                size_t k = 0;
+                while (k < plen && k < ws && prefix[k] == line[k]) k++;
+                plen = k;
+            }
+        }
+        line = eol ? eol + 1 : line + len;
+    }
+
+    /* 2. copy, dropping that prefix from every line */
+    char *d = out;
+    for (const char *line = code; *line; ) {
+        const char *eol = strchr(line, '\n');
+        size_t len = eol ? (size_t)(eol - line) : strlen(line);
+        size_t skip = 0;
+        while (skip < plen && skip < len && (line[skip] == ' ' || line[skip] == '\t')) skip++;
+        memcpy(d, line + skip, len - skip);
+        d += len - skip;
+        if (eol) *d++ = '\n';
+        line = eol ? eol + 1 : line + len;
+    }
+    *d = '\0';
+    return out;
+}
+
 static int run_locked(const char *code, Jlp7Env *env, int line_offset,
                       int strict, Jlp7Error *err) {
     int rc = -1;
@@ -467,15 +513,18 @@ static int run_locked(const char *code, Jlp7Env *env, int line_offset,
     /* Pad with blank lines so tracebacks and SyntaxErrors report lines of
      * the original source, not lines relative to the block. */
     if (line_offset < 1) line_offset = 1;
-    size_t pad = (size_t)(line_offset - 1), clen = strlen(code);
-    char *padded = malloc(pad + clen + 1);
+    char *clean = dedent(code);
+    size_t pad = (size_t)(line_offset - 1), clen = clean ? strlen(clean) : 0;
+    char *padded = clean ? malloc(pad + clen + 1) : NULL;
     if (!padded) {
+        free(clean);
         err->kind = JLP7_ERR_INTERNAL;
         err->message = strdup("out of memory");
         return -1;
     }
     memset(padded, '\n', pad);
-    memcpy(padded + pad, code, clen + 1);
+    memcpy(padded + pad, clean, clen + 1);
+    free(clean);
 
     PyObject *builtins = PyImport_ImportModule("builtins");
     PyObject *globals  = PyDict_New();

@@ -182,10 +182,11 @@ def test_type_error():
 
     pg = JLP7('c')
     try:
-        pg.run("", env={"x": {"a": 1}})
+        pg.run("", env={"x": {1, 2}})
         fail("should have raised TypeError")
-    except TypeError:
-        ok("TypeError raised for dict value")
+    except TypeError as e:
+        ok("TypeError raised for a set value")
+        assert_true("'x'" in str(e), "message names the variable")
 
 
 # ── Java tests ───────────────────────────────────────────────────────────────
@@ -296,6 +297,125 @@ def test_threads():
         assert_eq(results.get(tid), 50 * tid, f"thread {tid} result")
 
 
+def test_nested_env_in():
+    print("\n── Nested: Python dict/list -> and back ──")
+    env_in = {
+        "cfg": {"name": "run1", "layers": [{"units": 8}, {"units": 16}],
+                "opt": None, "lr": [0.1, 0.01], "deep": {"a": {"b": [1, "x", True]}}},
+        "names": ["a", "b"],
+        "mixed": (1, "two", None, 3.5),
+        "matrix": [[1, 2], [3, 4]],
+        "empty": [],
+        "flag": True,
+        "small": 5,
+    }
+    env = JLP7("c").run("", env=env_in)
+    assert_eq(env["cfg"]["layers"], [{"units": 8}, {"units": 16}], "list of dicts")
+    assert_eq(env["cfg"]["opt"], None, "None round-trips")
+    assert_eq(env["cfg"]["lr"], [0.1, 0.01], "numeric list inside a dict")
+    assert_eq(env["cfg"]["deep"]["a"]["b"], [1, "x", True], "deeply nested mixed list")
+    assert_eq(env["names"], ["a", "b"], "list of str")
+    assert_eq(env["mixed"], [1, "two", None, 3.5], "tuple -> list, None kept")
+    assert_eq(env["matrix"], [1.0, 2.0, 3.0, 4.0], "numeric 2D list flattens (unchanged)")
+    assert_eq(env["empty"], [], "empty list")
+    assert_eq(env["flag"], True, "bool still a bool")
+    assert_true(type(env["small"]) is int, "int still an int")
+
+
+def test_nested_python_block():
+    print("\n── Nested: values made in a /p block ──")
+    if not has_gcc():
+        print("  ⚠ gcc not found — skipping")
+        return
+    env = JLP7("c").run(
+        "long long n = 3;\n"
+        "/p\n"
+        "hist = [{'epoch': i, 'loss': 1.0 / (i + 1)} for i in range(n)]\n"
+        "summary = {'best': min(h['loss'] for h in hist), 'tags': ['a', 'b']}\n"
+        "p/\n")
+    assert_eq(len(env["hist"]), 3, "list of 3 dicts")
+    assert_eq(env["hist"][2]["epoch"], 2, "hist[2].epoch")
+    assert_eq(env["summary"]["tags"], ["a", "b"], "summary.tags")
+    assert_true(abs(env["summary"]["best"] - 1 / 3) < 1e-12, "float precision kept")
+
+
+def test_nested_bad_input():
+    print("\n── Nested: unsupported input ──")
+    pg = JLP7("c")
+    try:
+        pg.run("", env={"d": {1: "a"}})
+        fail("expected TypeError")
+    except TypeError as e:
+        assert_true("'d'" in str(e) and "str" in str(e), "int dict key: TypeError names var")
+    try:
+        pg.run("", env={"big": 2 ** 70})
+        fail("expected ValueError")
+    except ValueError:
+        ok("int above long long: ValueError")
+    cyc = []
+    cyc.append(cyc)
+    try:
+        pg.run("", env={"c": cyc})
+        fail("expected ValueError")
+    except ValueError:
+        ok("self-containing list: ValueError, no crash")
+    deep = "leaf"
+    for _ in range(100):
+        deep = [deep]
+    try:
+        pg.run("", env={"d": deep})
+        fail("expected ValueError")
+    except ValueError:
+        ok("100-deep nesting: ValueError")
+
+
+def test_c_struct_export():
+    print("\n── C structs (// jlp7:export) ──")
+    if not has_gcc():
+        print("  ⚠ gcc not found — skipping")
+        return
+    src = (
+        "// jlp7:export\n"
+        "struct Point { double x, y; };\n"
+        "struct Point p = {1.5, 2.5};\n"
+        "struct Point q;\n"
+        "q.y = q.y + 1;\n"
+        "/p\n"
+        "dist2 = p['x'] ** 2 + p['y'] ** 2\n"
+        "p/\n"
+    )
+    env = JLP7("c").run(src, env={"q": {"x": 10.0, "y": 20.0}})
+    assert_eq(env["p"], {"x": 1.5, "y": 2.5}, "struct -> dict")
+    assert_eq(env["q"], {"x": 10.0, "y": 21.0}, "dict -> struct -> dict")
+    assert_eq(env["dist2"], 1.5 ** 2 + 2.5 ** 2, "Python used the struct")
+
+    try:
+        JLP7("c").run("// jlp7:export\nstruct B { char *name; };\n")
+        fail("expected JLP7Error")
+    except JLP7Error:
+        ok("pointer field is an error")
+
+
+def test_java_nested():
+    print("\n── Java: nested values ──")
+    if not has_jshell():
+        print("  ⚠ jshell not found — skipping")
+        return
+    env = JLP7("java").run(
+        "/p\n"
+        "cfg = {'name': 'x', 'sizes': [1, 2, 3], 'note': None}\n"
+        "small = 5\n"
+        "p/\n"
+        "Map<String, Object> extra = new LinkedHashMap<>();\n"
+        "extra.put(\"k\", \"v\\\"q\");\n"
+        "cfg.put(\"added\", extra);\n"
+        "int twice = small * 2;\n")
+    assert_eq(env["cfg"]["added"], {"k": 'v"q'}, "Java put a Map into a Python dict")
+    assert_eq(env["cfg"]["note"], None, "null survived")
+    assert_eq(env["cfg"]["sizes"], [1.0, 2.0, 3.0], "double[] came back")
+    assert_eq(env["twice"], 10, "int typing: 'int twice = small * 2'")
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -314,6 +434,11 @@ if __name__ == "__main__":
     test_error_fields()
     test_strict_marshal()
     test_threads()
+    test_nested_env_in()
+    test_nested_python_block()
+    test_nested_bad_input()
+    test_c_struct_export()
+    test_java_nested()
     test_java_basic()
     test_java_string()
 

@@ -51,6 +51,12 @@ JLP7_FLOAT  = 1
 JLP7_BOOL   = 2
 JLP7_STRING = 3
 JLP7_ARRAY  = 4
+JLP7_LIST   = 5
+JLP7_DICT   = 6
+JLP7_NULL   = 7
+
+class _Jlp7Var(ctypes.Structure):
+    pass   # fields below: a Jlp7Var holds pointers to Jlp7Vars (LIST / DICT)
 
 class _ValUnion(ctypes.Union):
     _fields_ = [
@@ -59,17 +65,17 @@ class _ValUnion(ctypes.Union):
         ("b", ctypes.c_int),
         ("s", ctypes.c_char_p),
         ("arr", ctypes.POINTER(ctypes.c_double)),
+        ("items", ctypes.POINTER(_Jlp7Var)),
     ]
 
-class _Jlp7Var(ctypes.Structure):
-    # field order and types must mirror struct Jlp7Var in jlp7.h exactly --
-    # arr_len sits between type and val, same as the C struct.
-    _fields_ = [
-        ("name",    ctypes.c_char_p),
-        ("type",    ctypes.c_int),
-        ("arr_len", ctypes.c_size_t),
-        ("val",     _ValUnion),
-    ]
+# field order and types must mirror struct Jlp7Var in jlp7.h exactly --
+# arr_len sits between type and val, same as the C struct.
+_Jlp7Var._fields_ = [
+    ("name",    ctypes.c_char_p),
+    ("type",    ctypes.c_int),
+    ("arr_len", ctypes.c_size_t),
+    ("val",     _ValUnion),
+]
 
 class _Jlp7Env(ctypes.Structure):
     _fields_ = [
@@ -128,6 +134,33 @@ _lib.jlp7_env_set_str.argtypes   = [ctypes.POINTER(_Jlp7Env), ctypes.c_char_p, c
 _lib.jlp7_env_set_array.restype  = None
 _lib.jlp7_env_set_array.argtypes = [ctypes.POINTER(_Jlp7Env), ctypes.c_char_p,
                                      ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+
+_VarP = ctypes.POINTER(_Jlp7Var)
+
+_lib.jlp7_env_slot.restype       = _VarP
+_lib.jlp7_env_slot.argtypes      = [ctypes.POINTER(_Jlp7Env), ctypes.c_char_p]
+
+_lib.jlp7_var_set_int.restype    = None
+_lib.jlp7_var_set_int.argtypes   = [_VarP, ctypes.c_longlong]
+_lib.jlp7_var_set_float.restype  = None
+_lib.jlp7_var_set_float.argtypes = [_VarP, ctypes.c_double]
+_lib.jlp7_var_set_bool.restype   = None
+_lib.jlp7_var_set_bool.argtypes  = [_VarP, ctypes.c_int]
+_lib.jlp7_var_set_str.restype    = None
+_lib.jlp7_var_set_str.argtypes   = [_VarP, ctypes.c_char_p]
+_lib.jlp7_var_set_array.restype  = None
+_lib.jlp7_var_set_array.argtypes = [_VarP, ctypes.POINTER(ctypes.c_double), ctypes.c_size_t]
+_lib.jlp7_var_set_null.restype   = None
+_lib.jlp7_var_set_null.argtypes  = [_VarP]
+_lib.jlp7_var_set_list.restype   = None
+_lib.jlp7_var_set_list.argtypes  = [_VarP]
+_lib.jlp7_var_set_dict.restype   = None
+_lib.jlp7_var_set_dict.argtypes  = [_VarP]
+
+_lib.jlp7_list_push.restype      = _VarP
+_lib.jlp7_list_push.argtypes     = [_VarP]
+_lib.jlp7_dict_put.restype       = _VarP
+_lib.jlp7_dict_put.argtypes      = [_VarP, ctypes.c_char_p]
 
 _lib.jlp7_env_get.restype        = ctypes.POINTER(_Jlp7Var)
 _lib.jlp7_env_get.argtypes       = [ctypes.POINTER(_Jlp7Env), ctypes.c_char_p]

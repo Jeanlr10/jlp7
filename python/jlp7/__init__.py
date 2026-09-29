@@ -35,6 +35,7 @@ from ._lib import (
     _Jlp7Error,
     _ERR_KINDS,
     JLP7_INT, JLP7_FLOAT, JLP7_BOOL, JLP7_STRING, JLP7_ARRAY,
+    JLP7_LIST, JLP7_DICT, JLP7_NULL,
 )
 
 __version__ = "0.2.0"
@@ -94,65 +95,148 @@ def _error_from_struct(err: _Jlp7Error) -> JLP7Error:
     )
 
 
+_MAX_DEPTH = 64
+_INT_MIN, _INT_MAX = -(2 ** 63), 2 ** 63 - 1
+
+
+def _var_to_py(v, depth: int = 0) -> Any:
+    """Read one Jlp7Var (any type, any nesting) into a Python value."""
+    if depth > _MAX_DEPTH:
+        raise JLP7Error("value nested too deeply", kind="marshal")
+    t = v.type
+    if t == JLP7_INT:
+        return v.val.i
+    if t == JLP7_FLOAT:
+        return v.val.f
+    if t == JLP7_BOOL:
+        return bool(v.val.b)
+    if t == JLP7_STRING:
+        return v.val.s.decode("utf-8", "replace") if v.val.s else ""
+    if t == JLP7_ARRAY:
+        n = v.arr_len
+        return [v.val.arr[k] for k in range(n)] if n else []
+    if t == JLP7_LIST:
+        return [_var_to_py(v.val.items[k], depth + 1) for k in range(v.arr_len)]
+    if t == JLP7_DICT:
+        return {
+            v.val.items[k].name.decode("utf-8", "replace"):
+                _var_to_py(v.val.items[k], depth + 1)
+            for k in range(v.arr_len)
+        }
+    return None   # JLP7_NULL
+
+
 def _env_to_dict(env_ptr) -> dict[str, Any]:
     """Read a Jlp7Env* into a plain Python dict."""
     env = env_ptr.contents
-    result: dict[str, Any] = {}
-    for i in range(env.count):
-        v = env.vars[i]
-        name = v.name.decode()
-        if v.type == JLP7_INT:
-            result[name] = v.val.i
-        elif v.type == JLP7_FLOAT:
-            result[name] = v.val.f
-        elif v.type == JLP7_BOOL:
-            result[name] = bool(v.val.b)
-        elif v.type == JLP7_STRING:
-            result[name] = v.val.s.decode() if v.val.s else ""
-        elif v.type == JLP7_ARRAY:
-            n = v.arr_len
-            result[name] = [v.val.arr[k] for k in range(n)] if n else []
-    return result
+    return {
+        env.vars[i].name.decode(): _var_to_py(env.vars[i])
+        for i in range(env.count)
+    }
+
+
+def _as_sequence(value):
+    """list/tuple as is; anything with .tolist() (ndarray, numpy scalar)
+    is converted. Returns None for everything else."""
+    if isinstance(value, (list, tuple)):
+        return value
+    if isinstance(value, (str, bytes, dict)):
+        return None
+    if hasattr(value, "tolist"):
+        out = value.tolist()
+        return out if isinstance(out, (list, tuple)) else _Scalar(out)
+    return None
+
+
+class _Scalar:
+    """A 0-d array converted to its Python scalar."""
+    def __init__(self, value):
+        self.value = value
+
+
+def _is_numeric_tree(value, depth: int = 0) -> bool:
+    """True if every leaf of a (nested) sequence is a number or bool."""
+    if depth > _MAX_DEPTH:
+        return False
+    seq = _as_sequence(value)
+    if seq is None:
+        return isinstance(value, (int, float))
+    if isinstance(seq, _Scalar):
+        return isinstance(seq.value, (int, float))
+    return all(_is_numeric_tree(item, depth + 1) for item in seq)
+
+
+def _fill_var(var, value, depth: int = 0) -> None:
+    """Write a Python value into a Jlp7Var* (creating children as needed).
+
+    None -> NULL; bool/int/float/str -> scalars; dict with str keys -> DICT;
+    list/tuple/ndarray -> a flat ARRAY when every leaf is a number
+    (nesting is flattened row-major), else a LIST.
+    """
+    if depth > _MAX_DEPTH:
+        raise ValueError("value is nested too deeply (or contains itself)")
+
+    if value is None:
+        _lib.jlp7_var_set_null(var)
+    elif isinstance(value, bool):
+        _lib.jlp7_var_set_bool(var, int(value))
+    elif isinstance(value, int):
+        if not _INT_MIN <= value <= _INT_MAX:
+            raise ValueError("integer does not fit in long long")
+        _lib.jlp7_var_set_int(var, value)
+    elif isinstance(value, float):
+        _lib.jlp7_var_set_float(var, value)
+    elif isinstance(value, str):
+        _lib.jlp7_var_set_str(var, value.encode("utf-8"))
+    elif isinstance(value, dict):
+        _lib.jlp7_var_set_dict(var)
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"dict keys must be str, got {type(key).__name__}"
+                )
+            _fill_var(_lib.jlp7_dict_put(var, key.encode("utf-8")), item, depth + 1)
+    else:
+        seq = _as_sequence(value)
+        if seq is None:
+            raise TypeError(f"unsupported type {type(value).__name__}")
+        if isinstance(seq, _Scalar):
+            _fill_var(var, seq.value, depth + 1)
+        elif seq and _is_numeric_tree(seq):
+            flat = _flatten(seq)
+            arr_t = ctypes.c_double * len(flat)
+            _lib.jlp7_var_set_array(var, arr_t(*flat), len(flat))
+        else:
+            _lib.jlp7_var_set_list(var)
+            for item in seq:
+                _fill_var(_lib.jlp7_list_push(var), item, depth + 1)
 
 
 def _dict_to_env(d: dict[str, Any], env_ptr) -> None:
     """Write a Python dict into an existing Jlp7Env*."""
     for name, value in d.items():
-        key = name.encode()
-        if isinstance(value, bool):
-            _lib.jlp7_env_set_bool(env_ptr, key, int(value))
-        elif isinstance(value, int):
-            _lib.jlp7_env_set_int(env_ptr, key, value)
-        elif isinstance(value, float):
-            _lib.jlp7_env_set_float(env_ptr, key, value)
-        elif isinstance(value, str):
-            _lib.jlp7_env_set_str(env_ptr, key, value.encode())
-        elif isinstance(value, (list, tuple)) or hasattr(value, "tolist"):
-            # accepts plain lists/tuples and numpy arrays (via .tolist());
-            # flattened, so a 2D array goes in row-major and comes back flat
-            flat = _flatten(value)
-            arr_t = ctypes.c_double * len(flat)
-            _lib.jlp7_env_set_array(env_ptr, key, arr_t(*flat), len(flat))
-        else:
-            raise TypeError(
-                f"Variable '{name}' has unsupported type {type(value).__name__}. "
-                f"JLP7 supports int, float, bool, str, and list/tuple/ndarray "
-                f"of numbers."
-            )
+        slot = _lib.jlp7_env_slot(env_ptr, name.encode())
+        try:
+            _fill_var(slot, value)
+        except (TypeError, ValueError) as exc:
+            kind = TypeError if isinstance(exc, TypeError) else ValueError
+            raise kind(
+                f"Variable '{name}': {exc}. JLP7 supports None, int, float, "
+                f"bool, str, dict with str keys, and lists/tuples/ndarrays "
+                f"of those."
+            ) from None
 
 
 def _flatten(value) -> list[float]:
     """Flatten a list/tuple/ndarray of numbers into a flat list of floats."""
-    if hasattr(value, "tolist") and not isinstance(value, (list, tuple)):
-        value = value.tolist()
+    seq = _as_sequence(value)
+    if seq is None:
+        return [float(value)]
+    if isinstance(seq, _Scalar):
+        return [float(seq.value)]
     out: list[float] = []
-    for item in value:
-        if isinstance(item, (list, tuple)) or (
-            hasattr(item, "tolist") and not isinstance(item, (int, float))
-        ):
-            out.extend(_flatten(item))
-        else:
-            out.append(float(item))
+    for item in seq:
+        out.extend(_flatten(item))
     return out
 
 
@@ -230,8 +314,9 @@ class JLP7:
         source : str
             The source code to execute, optionally containing ``/p...p/`` blocks.
         env : dict, optional
-            Initial variable state. Keys must be str, values must be
-            int, float, bool, or str.
+            Initial variable state. Keys must be str. Values may be None,
+            int, float, bool, str, a dict with str keys, or a
+            list/tuple/ndarray of those (nesting allowed).
 
         Returns
         -------
