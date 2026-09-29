@@ -182,10 +182,10 @@ def test_type_error():
 
     pg = JLP7('c')
     try:
-        pg.run("", env={"x": [1, 2, 3]})
+        pg.run("", env={"x": {"a": 1}})
         fail("should have raised TypeError")
     except TypeError:
-        ok("TypeError raised for list value")
+        ok("TypeError raised for dict value")
 
 
 # ── Java tests ───────────────────────────────────────────────────────────────
@@ -227,6 +227,45 @@ def test_java_string():
     assert_eq(env.get("greeting"), "HELLO WORLD", "string mutated")
 
 
+def test_error_fields():
+    print("\n── Errors: structured JLP7Error ──")
+    if not has_gcc():
+        print("  ⚠ gcc not found — skipping")
+        return
+    pg = JLP7("c")
+    try:
+        pg.run("long long x = 1;\n/p\nx = 2\ny = 1 / 0\np/\n")
+        fail("expected JLP7Error")
+    except JLP7Error as e:
+        assert_eq(e.kind, "python-runtime", "kind")
+        assert_eq(e.exc_type, "ZeroDivisionError", "exc_type")
+        assert_eq(e.line, 4, "line in original source")
+        assert_eq(e.block_index, 1, "block_index")
+        assert_true("Traceback" in (e.traceback or ""), "traceback present")
+
+    try:
+        pg.run("long long x = 1;\n\n/p\nx = = 2\np/\n")
+        fail("expected JLP7Error")
+    except JLP7Error as e:
+        assert_eq(e.kind, "python-compile", "syntax error kind")
+        assert_eq(e.line, 4, "syntax error line")
+
+
+def test_strict_marshal():
+    print("\n── Errors: strict marshalling ──")
+    if not has_gcc():
+        print("  ⚠ gcc not found — skipping")
+        return
+    src = "long long x = 1;\n/p\nd = {'a': 1}\np/\n"
+    env = JLP7("c").run(src)
+    assert_true("d" not in env, "non-strict leaves dict in Python")
+    try:
+        JLP7("c", strict=True).run(src)
+        fail("expected JLP7Error")
+    except JLP7Error as e:
+        assert_eq(e.kind, "marshal", "strict raises marshal error")
+
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -242,6 +281,8 @@ if __name__ == "__main__":
     test_c_multi_block()
     test_c_compile_error()
     test_type_error()
+    test_error_fields()
+    test_strict_marshal()
     test_java_basic()
     test_java_string()
 

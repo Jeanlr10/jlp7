@@ -111,6 +111,33 @@ Jlp7Var *jlp7_env_get(Jlp7Env *env, const char *name) {
     return NULL;
 }
 
+static void copy_var(Jlp7Env *dst, const Jlp7Var *v) {
+    switch (v->type) {
+        case JLP7_INT:    jlp7_env_set_int(dst,   v->name, v->val.i); break;
+        case JLP7_FLOAT:  jlp7_env_set_float(dst, v->name, v->val.f); break;
+        case JLP7_BOOL:   jlp7_env_set_bool(dst,  v->name, v->val.b); break;
+        case JLP7_STRING: jlp7_env_set_str(dst,   v->name, v->val.s); break;
+        case JLP7_ARRAY:  jlp7_env_set_array(dst, v->name, v->val.arr, v->arr_len); break;
+    }
+}
+
+void jlp7_env_merge(Jlp7Env *dst, const Jlp7Env *src) {
+    for (size_t i = 0; i < src->count; i++) copy_var(dst, &src->vars[i]);
+}
+
+Jlp7Env *jlp7_env_clone(const Jlp7Env *env) {
+    Jlp7Env *c = jlp7_env_new();
+    if (c) jlp7_env_merge(c, env);
+    return c;
+}
+
+void jlp7_env_replace(Jlp7Env *dst, Jlp7Env *src) {
+    for (size_t i = 0; i < dst->count; i++) var_free(&dst->vars[i]);
+    free(dst->vars);
+    *dst = *src;   /* take over the buffer */
+    free(src);
+}
+
 void jlp7_env_dump(const Jlp7Env *env) {
     fprintf(stderr, "[jlp7:env] %zu variable(s):\n", env->count);
     for (size_t i = 0; i < env->count; i++) {

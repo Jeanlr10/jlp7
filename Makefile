@@ -1,5 +1,5 @@
 CC      = gcc
-CFLAGS  = -Wall -Wextra -std=c11 -Iinclude \
+CFLAGS  = -Wall -Wextra -std=c11 -Iinclude -MMD -MP \
           $(shell python3-config --includes)
 LDFLAGS = $(shell python3-config --embed --ldflags 2>/dev/null || \
                   python3-config --ldflags) \
@@ -17,6 +17,7 @@ SRC = src/env.c          \
       src/jlp7.c
 
 OBJ     = $(SRC:.c=.o)
+DEPS    = $(OBJ:.o=.d) src/main.d
 TEST    = jlp7_test
 LIB     = libjlp7.so
 
@@ -36,5 +37,7 @@ lib: $(OBJ)
 test: $(TEST)
 	./$(TEST)
 
+-include $(DEPS)
+
 clean:
-	rm -f $(OBJ) src/main.o $(TEST) $(LIB)
+	rm -f $(OBJ) $(DEPS) src/main.o $(TEST) $(LIB)

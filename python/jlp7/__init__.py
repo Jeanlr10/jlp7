@@ -32,6 +32,8 @@ from typing import Any
 from ._lib import (
     _lib,
     _Jlp7Config,
+    _Jlp7Error,
+    _ERR_KINDS,
     JLP7_INT, JLP7_FLOAT, JLP7_BOOL, JLP7_STRING, JLP7_ARRAY,
 )
 
@@ -40,7 +42,56 @@ __all__     = ["JLP7", "JLP7Error"]
 
 
 class JLP7Error(Exception):
-    """Raised when the underlying C library returns an error."""
+    """
+    Raised when the underlying C library returns an error.
+
+    Attributes
+    ----------
+    kind : str
+        ``'python-compile'``, ``'python-runtime'``, ``'marshal'``,
+        ``'foreign'``, ``'config'`` or ``'internal'``.
+    exc_type : str | None
+        Name of the Python exception class (``'ZeroDivisionError'``), if any.
+    message : str
+        Short message.
+    traceback : str | None
+        Full formatted Python traceback. Line numbers refer to the source
+        string passed to ``run()``.
+    block_index : int
+        0-based index of the failing block, or -1.
+    line : int
+        1-based line in the source, or 0 if unknown.
+    """
+
+    def __init__(self, message, kind="internal", exc_type=None,
+                 traceback=None, block_index=-1, line=0):
+        super().__init__(message)
+        self.kind        = kind
+        self.exc_type    = exc_type
+        self.message     = message
+        self.traceback   = traceback
+        self.block_index = block_index
+        self.line        = line
+
+    def __str__(self):
+        where = f" (line {self.line})" if self.line else ""
+        head  = f"{self.exc_type}: " if self.exc_type else ""
+        return f"[{self.kind}]{where} {head}{self.message}"
+
+
+def _cstr(ptr):
+    return ctypes.string_at(ptr).decode("utf-8", "replace") if ptr else None
+
+
+def _error_from_struct(err: _Jlp7Error) -> JLP7Error:
+    return JLP7Error(
+        _cstr(err.message) or "unknown error",
+        kind        = _ERR_KINDS.get(err.kind, "internal"),
+        exc_type    = _cstr(err.exc_type),
+        traceback   = _cstr(err.traceback),
+        block_index = err.block_index,
+        line        = err.line,
+    )
 
 
 def _env_to_dict(env_ptr) -> dict[str, Any]:
@@ -117,6 +168,10 @@ class JLP7:
         Whether ``/p...p/`` blocks are permitted. Default ``True``.
     debug : bool
         Enable verbose internal logging from the C library. Default ``False``.
+    strict : bool
+        Raise ``JLP7Error`` (kind ``'marshal'``) when a Python block leaves a
+        variable that cannot cross the boundary (dict, object, non-numeric
+        list). Default ``False``: such variables stay in Python, unexported.
 
     Examples
     --------
@@ -150,6 +205,7 @@ class JLP7:
         language: str,
         allowpy: bool = True,
         debug: bool = False,
+        strict: bool = False,
     ) -> None:
         lang = language.lower()
         if lang not in ("c", "java"):
@@ -159,6 +215,7 @@ class JLP7:
         self._language = lang
         self._allowpy  = allowpy
         self._debug    = debug
+        self._strict   = strict
 
     def run(
         self,
@@ -185,7 +242,9 @@ class JLP7:
         ------
         JLP7Error
             If the C library reports an error (compile failure, runtime
-            error, unsupported language, etc.).
+            error, unsupported language, etc.). The exception carries
+            ``kind``, ``exc_type``, ``traceback``, ``block_index`` and
+            ``line``. A failed ``run()`` never returns partial state.
         TypeError
             If ``env`` contains values of unsupported types.
         """
@@ -194,6 +253,7 @@ class JLP7:
             language = self._language.encode(),
             allowpy  = int(self._allowpy),
             debug    = int(self._debug),
+            strict   = int(self._strict),
         )
 
         # Build Jlp7Env, seed with any provided vars
@@ -202,17 +262,20 @@ class JLP7:
             if env:
                 _dict_to_env(env, env_ptr)
 
-            rc = _lib.jlp7_exec(
+            err = _Jlp7Error()
+            rc = _lib.jlp7_exec_ex(
                 source.encode(),
                 ctypes.byref(cfg),
                 env_ptr,
+                ctypes.byref(err),
             )
 
             if rc != 0:
-                raise JLP7Error(
-                    f"jlp7_exec failed (rc={rc}). "
-                    f"Check stderr for details, or re-run with debug=True."
-                )
+                try:
+                    exc = _error_from_struct(err)
+                finally:
+                    _lib.jlp7_error_clear(ctypes.byref(err))
+                raise exc
 
             return _env_to_dict(env_ptr)
 

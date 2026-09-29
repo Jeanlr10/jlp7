@@ -173,6 +173,102 @@ static void test_python_error(void) {
     jlp7_env_free(env);
 }
 
+/* ── Structured errors & transactional env ──────────────────────────── */
+
+static void test_error_struct(void) {
+    printf("\n── Errors: structured Jlp7Error ──\n");
+    Jlp7Config cfg = jlp7_default_config("c");
+    Jlp7Env   *env = jlp7_env_new();
+    Jlp7Error  err;
+
+    /* Runtime error on line 4 of the original source, in block 1 */
+    int rc = jlp7_exec_ex("long long x = 1;\n/p\nx = 2\ny = 1 / 0\np/\n",
+                          &cfg, env, &err);
+    ASSERT(rc == -1,                                  "runtime error returns -1");
+    ASSERT(err.kind == JLP7_ERR_PY_RUNTIME,           "kind = python-runtime");
+    ASSERT(err.exc_type && strcmp(err.exc_type, "ZeroDivisionError") == 0,
+                                                      "exc_type captured");
+    ASSERT(err.message && strstr(err.message, "division"), "message captured");
+    ASSERT(err.traceback && strstr(err.traceback, "Traceback"), "traceback captured");
+    ASSERT(err.line == 4,                             "line maps to original source");
+    ASSERT(err.block_index == 1,                      "block_index = 1");
+    jlp7_error_clear(&err);
+
+    /* Syntax error */
+    memset(&err, 0, sizeof(err));
+    rc = jlp7_exec_ex("long long x = 1;\n\n/p\nx = = 2\np/\n", &cfg, env, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_PY_COMPILE, "kind = python-compile");
+    ASSERT(err.exc_type && strcmp(err.exc_type, "SyntaxError") == 0, "SyntaxError");
+    ASSERT(err.line == 4,                             "syntax error line maps");
+    jlp7_error_clear(&err);
+
+    /* sys.exit must not kill the host process */
+    memset(&err, 0, sizeof(err));
+    rc = jlp7_exec_ex("/p\nimport sys\nsys.exit(3)\np/\n", &cfg, env, &err);
+    ASSERT(rc == -1 && err.exc_type && strcmp(err.exc_type, "SystemExit") == 0,
+                                                      "sys.exit is an error, not an exit");
+    jlp7_error_clear(&err);
+
+    /* allowpy=0 */
+    cfg.allowpy = 0;
+    memset(&err, 0, sizeof(err));
+    rc = jlp7_exec_ex("/p\nx = 1\np/\n", &cfg, env, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_CONFIG,   "allowpy=0 -> config error");
+    jlp7_error_clear(&err);
+
+    jlp7_env_free(env);
+}
+
+static void test_transactional_env(void) {
+    printf("\n── Errors: env is all-or-nothing ──\n");
+    Jlp7Config cfg = jlp7_default_config("c");
+    Jlp7Env   *env = jlp7_env_new();
+    jlp7_env_set_int(env, "x", 1);
+
+    /* Block 0 succeeds and changes x; block 1 fails. x must be back to 1
+     * and "y" must not exist. */
+    int rc = jlp7_exec("/p\nx = 100\ny = 5\np/\n/p\nraise ValueError('boom')\np/\n",
+                       &cfg, env);
+    ASSERT(rc == -1, "exec failed");
+    Jlp7Var *v = jlp7_env_get(env, "x");
+    ASSERT(v && v->val.i == 1,           "x rolled back to 1");
+    ASSERT(jlp7_env_get(env, "y") == NULL, "y from earlier block rolled back");
+
+    /* A successful run still commits */
+    rc = jlp7_exec("/p\nx = 7\np/\n", &cfg, env);
+    v = jlp7_env_get(env, "x");
+    ASSERT(rc == 0 && v && v->val.i == 7, "success commits");
+
+    jlp7_env_free(env);
+}
+
+static void test_marshal_errors(void) {
+    printf("\n── Errors: marshalling ──\n");
+    Jlp7Env  *env = jlp7_env_new();
+    Jlp7Error err;
+    memset(&err, 0, sizeof(err));
+
+    /* Integer outside long long: always an error, never a silent -1 */
+    int rc = jlp7_run_python_ex("big = 2**80\n", env, 1, 0, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_MARSHAL, "int overflow is a marshal error");
+    ASSERT(err.message && strstr(err.message, "big"), "message names the variable");
+    ASSERT(jlp7_env_get(env, "big") == NULL,          "nothing exported");
+    jlp7_error_clear(&err);
+
+    /* dict: skipped by default ... */
+    rc = jlp7_run_python_ex("d = {'a': 1}\nn = 3\n", env, 1, 0, &err);
+    ASSERT(rc == 0 && jlp7_env_get(env, "d") == NULL && jlp7_env_get(env, "n"),
+                                                      "non-strict skips dict, keeps n");
+
+    /* ... and an error when strict, with no partial export */
+    rc = jlp7_run_python_ex("m = 9\nd = {'a': 1}\n", env, 1, 1, &err);
+    ASSERT(rc == -1 && err.kind == JLP7_ERR_MARSHAL, "strict: dict is a marshal error");
+    ASSERT(jlp7_env_get(env, "m") == NULL,            "strict: no partial export");
+    jlp7_error_clear(&err);
+
+    jlp7_env_free(env);
+}
+
 /* ── allowpy guard ──────────────────────────────────────────────────── */
 
 static void test_allowpy_false(void) {
@@ -397,6 +493,9 @@ int main(void) {
     test_python_strings();
     test_python_bool();
     test_python_error();
+    test_error_struct();
+    test_transactional_env();
+    test_marshal_errors();
     test_allowpy_false();
     test_java_basic();
     test_java_strings();

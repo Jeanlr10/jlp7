@@ -82,6 +82,33 @@ make lib
 gcc -Iinclude your_program.c -o your_program -L. -ljlp7 -lpython3.12
 ```
 
+## Errors
+
+A failed run never leaves partial state: if any block fails, `env` is
+restored to what it was before the call.
+
+```python
+from jlp7 import JLP7, JLP7Error
+
+try:
+    JLP7('c').run('long long x = 1;\n/p\ny = 1 / 0\np/\n')
+except JLP7Error as e:
+    e.kind         # 'python-runtime'
+    e.exc_type     # 'ZeroDivisionError'
+    e.line         # 3  (line in your source, not in the block)
+    e.block_index  # 1
+    e.traceback    # full Python traceback
+```
+
+Kinds: `python-compile`, `python-runtime`, `marshal`, `foreign`,
+`config`, `internal`. In C, use `jlp7_exec_ex(source, &cfg, env, &err)`
+and `jlp7_error_clear(&err)`.
+
+A Python integer that does not fit `long long` is always a `marshal`
+error. Values with no C/Java form (dicts, objects) stay in Python and are
+skipped, unless you set `strict` (`JLP7('c', strict=True)`, or
+`cfg.strict = 1`), which makes them a `marshal` error too.
+
 ## Supported Types
 
 | C / Java       | Python  |

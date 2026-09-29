@@ -83,6 +83,26 @@ class _Jlp7Config(ctypes.Structure):
         ("language", ctypes.c_char_p),
         ("allowpy",  ctypes.c_int),
         ("debug",    ctypes.c_int),
+        ("strict",   ctypes.c_int),
+    ]
+
+# enum Jlp7ErrorKind
+_ERR_KINDS = {
+    0: "none", 1: "config", 2: "python-compile", 3: "python-runtime",
+    4: "marshal", 5: "foreign", 6: "internal",
+}
+
+class _Jlp7Error(ctypes.Structure):
+    # Must mirror Jlp7Error in jlp7.h. String fields are declared as raw
+    # pointers (not c_char_p) so we can hand them back to the C library
+    # for freeing via jlp7_error_clear.
+    _fields_ = [
+        ("kind",        ctypes.c_int),
+        ("exc_type",    ctypes.c_void_p),
+        ("message",     ctypes.c_void_p),
+        ("traceback",   ctypes.c_void_p),
+        ("block_index", ctypes.c_int),
+        ("line",        ctypes.c_int),
     ]
 
 # ── Function signatures ──────────────────────────────────────────────────────
@@ -116,6 +136,15 @@ _lib.jlp7_exec.restype           = ctypes.c_int
 _lib.jlp7_exec.argtypes          = [ctypes.c_char_p,
                                      ctypes.POINTER(_Jlp7Config),
                                      ctypes.POINTER(_Jlp7Env)]
+
+_lib.jlp7_exec_ex.restype        = ctypes.c_int
+_lib.jlp7_exec_ex.argtypes       = [ctypes.c_char_p,
+                                     ctypes.POINTER(_Jlp7Config),
+                                     ctypes.POINTER(_Jlp7Env),
+                                     ctypes.POINTER(_Jlp7Error)]
+
+_lib.jlp7_error_clear.restype    = None
+_lib.jlp7_error_clear.argtypes   = [ctypes.POINTER(_Jlp7Error)]
 
 _lib.jlp7_default_config.restype  = _Jlp7Config
 _lib.jlp7_default_config.argtypes = [ctypes.c_char_p]
